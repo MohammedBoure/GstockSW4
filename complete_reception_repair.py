@@ -1,4 +1,4 @@
-l"""
+"""
 complete_reception_repair.py
 -------------------------------------------------------------------------
 مُطور خصيصاً للمهندس أنس بوزياد لإصلاح مشكلة تكرار السطور الناتجة عن النقل.
@@ -37,9 +37,9 @@ def _connect():
     env_path = PROJECT_ROOT / ".env"
     if not env_path.exists():
         env_path = Path(os.getcwd()) / ".env"
-        
+
     load_dotenv(env_path, override=True)
-    
+
     cfg = {
         "host": os.getenv("DB_HOST", "localhost"),
         "user": os.getenv("DB_USER"),
@@ -167,21 +167,21 @@ def _recalculate_reception_totals(cursor, br_id: int) -> dict[str, Decimal]:
     total_ht = Decimal("0")
     total_discount = Decimal("0")
     total_tva = Decimal("0")
-    
+
     for row in rows:
         qty = _decimal(row["Quantity_Initial"])
         price = _decimal(row["Unit_Price_Received"])
         tax_rate = _decimal(row["Tax_Rate_Percent"]) / Decimal("100")
         discount_rate = _decimal(row["Discount_Percent"]) / Decimal("100")
-        
+
         line_ht = qty * price
         line_discount = line_ht * discount_rate
         line_net = line_ht - line_discount
-        
+
         total_ht += line_ht
         total_discount += line_discount
         total_tva += line_net * tax_rate
-        
+
     total_ttc = (total_ht - total_discount) + total_tva
     return {
         "Invoice_Total_HT": total_ht.quantize(Decimal("0.01")),
@@ -193,7 +193,7 @@ def _recalculate_reception_totals(cursor, br_id: int) -> dict[str, Decimal]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Script مخصص لأنس بوزياد لإصلاح تكرار سطور الاستلام بالكامل.")
-    parser.add_argument("--br-id", type=int, required=True, help="معرف BR_ID المراد فصحه وإصلاحه")
+    parser.add_argument("--br-id", type=str, required=True, help="معرف BR_ID المراد فصحه وإصلاحه، أو 'all' لفحص جميع المستندات.")
     parser.add_argument("--apply", action="store_true", help="تطبيق الإصلاح الفعلي على قاعدة البيانات")
     parser.add_argument("--log-user-id", type=int, default=1, help="معرف المستخدم لتسجيل العمليات")
     args = parser.parse_args()
@@ -202,128 +202,142 @@ def main() -> int:
     conn.autocommit = False
     try:
         cursor = conn.cursor(dictionary=True)
-        
-        _print_section(f"البدء في تحليل مستند الاستلام رقم: {args.br_id}")
-        groups = _load_duplicate_groups(cursor, args.br_id)
-        print(f"تم العثور على {len(groups)} مجموعة تكرار مرشحة للفحص.")
-        
-        repairs: list[dict[str, Any]] = []
-        for group in groups:
-            batches = _load_group_batches(cursor, group)
-            if len(batches) < 2:
+        if args.br_id.lower() == "all":
+            rows = _fetch(cursor, "SELECT DISTINCT BR_ID FROM Inventory_Batches WHERE BR_ID IS NOT NULL")
+            br_ids = [r["BR_ID"] for r in rows]
+            _print_section("تم اختيار وضع 'all': سيتم فحص جميع المستندات في قاعدة البيانات")
+        else:
+            br_ids = [int(args.br_id)]
+
+        total_repairs = 0
+
+        for br_id in br_ids:
+            _print_section(f"البدء في تحليل مستند الاستلام رقم: {br_id}")
+            groups = _load_duplicate_groups(cursor, br_id)
+            if not groups:
+                print("قاعدة البيانات سليمة لهذا المستند.")
                 continue
 
-            # تحديد الدفعة الأصلية (التي لم تبدأ بحركة نقل)
-            purchase_batches = [
-                b for b in batches
-                if str(b.get("First_Movement_Type") or "").lower() != "transfer"
-            ]
-            
-            if not purchase_batches:
-                # إذا كانت كل الحركات تحويل، نترك الأولى كدفعة مرجعية تفادياً لتصفير المجموعة بالكامل
-                canonical = batches[0]
-            else:
-                canonical = purchase_batches[0]
+            print(f"تم العثور على {len(groups)} مجموعة تكرار مرشحة للفحص في {br_id}.")
 
-            for batch in batches:
-                if batch["Batch_ID"] == canonical["Batch_ID"]:
+            repairs: list[dict[str, Any]] = []
+            for group in groups:
+                batches = _load_group_batches(cursor, group)
+                if len(batches) < 2:
                     continue
-                # التأكد من أن أول حركة للسطر المكرر هي حركة نقل Transfer حصراً
-                if str(batch.get("First_Movement_Type") or "").lower() != "transfer":
-                    continue
-                if _decimal(batch.get("Quantity_Initial")) <= 0:
-                    continue
-                    
-                repairs.append({
-                    "action": "hide_transfer_batch_from_reception",
-                    "canonical_batch_id": canonical["Batch_ID"],
-                    "split_batch_id": batch["Batch_ID"],
-                    "barcode": batch["Internal_Barcode"],
-                    "product_id": batch["Product_ID"],
-                    "product_name": batch["Product_Name"],
-                    "location": batch["Location_Name"],
-                    "old_quantity_initial": batch["Quantity_Initial"],
-                    "quantity_current_kept": batch["Quantity_Current"],
-                    "first_movement_type": batch["First_Movement_Type"],
-                    "first_movement_qty": batch["First_Movement_Qty"],
-                    "first_movement_date": batch["First_Movement_Date"],
-                })
 
-        _print_section("تقرير الإصلاحات المخطط لها (Planned Repairs)")
-        print(f"عدد السطور الوهمية المكتشفة والمراد إخفاؤها من الوصل: {len(repairs)}")
-        for r in repairs:
-            print(f" -> المنتج: {r['product_name']} | الكود: {r['barcode']} | المعرف المتضرر: {r['split_batch_id']} (الكمية الابتدائية القديمة: {r['old_quantity_initial']})")
+                # تحديد الدفعة الأصلية (التي لم تبدأ بحركة نقل)
+                purchase_batches = [
+                    b for b in batches
+                    if str(b.get("First_Movement_Type") or "").lower() != "transfer"
+                ]
 
-        before_totals = _recalculate_reception_totals(cursor, args.br_id)
-        print(f"\nالمجاميع الحالية قبل الإصلاح: HT={before_totals['Invoice_Total_HT']} | TTC={before_totals['Invoice_Total_TTC']}")
+                if not purchase_batches:
+                    canonical = batches[0]
+                else:
+                    canonical = purchase_batches[0]
 
-        if not repairs:
-            conn.rollback()
-            print("\n قاعدة البيانات سليمة ولا توجد أي سطور مكررة ناتجة عن النقل لهذا المستند.")
-            return 0
+                for batch in batches:
+                    if batch["Batch_ID"] == canonical["Batch_ID"]:
+                        continue
+                    if str(batch.get("First_Movement_Type") or "").lower() != "transfer":
+                        continue
+                    if _decimal(batch.get("Quantity_Initial")) <= 0:
+                        continue
 
-        if not args.apply:
-            conn.rollback()
-            print("\n[وضع المحاكاة Dry-Run]: لإدخال التعديلات فعلياً على قاعدة البيانات، أعد التشغيل مع إضافة خيار: --apply")
-            return 0
+                    repairs.append({
+                        "action": "hide_transfer_batch_from_reception",
+                        "canonical_batch_id": canonical["Batch_ID"],
+                        "split_batch_id": batch["Batch_ID"],
+                        "barcode": batch["Internal_Barcode"],
+                        "product_id": batch["Product_ID"],
+                        "product_name": batch["Product_Name"],
+                        "location": batch["Location_Name"],
+                        "old_quantity_initial": batch["Quantity_Initial"],
+                        "quantity_current_kept": batch["Quantity_Current"],
+                        "first_movement_type": batch["First_Movement_Type"],
+                        "first_movement_qty": batch["First_Movement_Qty"],
+                        "first_movement_date": batch["First_Movement_Date"],
+                    })
 
-        # البدء في تنفيذ التعديلات الفعلية
-        _print_section("تطبيق عملية الإصلاح الفعلي وحفظ التعديلات")
-        for repair in repairs:
+            if not repairs:
+                print("لا توجد أي سطور مكررة ناتجة عن النقل لهذا المستند.")
+                continue
+
+            print(f"عدد السطور الوهمية المكتشفة والمراد إخفاؤها من الوصل: {len(repairs)}")
+            for r in repairs:
+                print(f" -> المنتج: {r['product_name']} | الكود: {r['barcode']} | المعرف المتضرر: {r['split_batch_id']} (الكمية القديمة: {r['old_quantity_initial']})")
+
+            before_totals = _recalculate_reception_totals(cursor, br_id)
+            print(f"\nالمجاميع الحالية: HT={before_totals['Invoice_Total_HT']} | TTC={before_totals['Invoice_Total_TTC']}")
+
+            if not args.apply:
+                print("[وضع المحاكاة Dry-Run]: لتطبيق التعديلات، استخدم --apply")
+                continue
+
+            for repair in repairs:
+                cursor.execute(
+                    "UPDATE Inventory_Batches SET Quantity_Initial = 0 WHERE Batch_ID = %s",
+                    (repair["split_batch_id"],),
+                )
+                print(f" ✔ تم تصفير الكمية الابتدائية للدفعة رقم {repair['split_batch_id']}.")
+
+            after_totals = _recalculate_reception_totals(cursor, br_id)
             cursor.execute(
-                "UPDATE Inventory_Batches SET Quantity_Initial = 0 WHERE Batch_ID = %s",
-                (repair["split_batch_id"],),
+                """
+                UPDATE Reception_Log
+                SET Invoice_Total_HT = %s,
+                    Invoice_Total_TVA = %s,
+                    Invoice_Total_TTC = %s,
+                    Total_Discount = %s
+                WHERE BR_ID = %s
+                """,
+                (
+                    after_totals["Invoice_Total_HT"],
+                    after_totals["Invoice_Total_TVA"],
+                    after_totals["Invoice_Total_TTC"],
+                    after_totals["Total_Discount"],
+                    br_id,
+                ),
             )
-            print(f" ✔ تم تصفير الكمية الابتدائية للدفعة رقم {repair['split_batch_id']} بنجاح.")
 
-        # إعادة احتساب وتحديث قيم رأس الفاتورة
-        after_totals = _recalculate_reception_totals(cursor, args.br_id)
-        cursor.execute(
-            """
-            UPDATE Reception_Log
-            SET Invoice_Total_HT = %s,
-                Invoice_Total_TVA = %s,
-                Invoice_Total_TTC = %s,
-                Total_Discount = %s
-            WHERE BR_ID = %s
-            """,
-            (
-                after_totals["Invoice_Total_HT"],
-                after_totals["Invoice_Total_TVA"],
-                after_totals["Invoice_Total_TTC"],
-                after_totals["Total_Discount"],
-                args.br_id,
-            ),
-        )
+            log_details = {
+                "br_id": br_id,
+                "repairs_count": len(repairs),
+                "repairs": repairs,
+                "before_totals": before_totals,
+                "after_totals": after_totals,
+                "repaired_by": "Anis Bouziad Script Pipeline"
+            }
+            cursor.execute(
+                """
+                INSERT INTO SystemLogs (user_id, module, action, details, ip_address)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    args.log_user_id,
+                    "ReceptionStockConsistencyRepair",
+                    "[UPDATE] hide_transfer_batches_from_reception()",
+                    json.dumps(log_details, ensure_ascii=False, default=_json_default),
+                    "127.0.0.1",
+                ),
+            )
 
-        # توثيق التعديل بدقة في سجل النظام للأمان والشفافية
-        log_details = {
-            "br_id": args.br_id,
-            "repairs_count": len(repairs),
-            "repairs": repairs,
-            "before_totals": before_totals,
-            "after_totals": after_totals,
-            "repaired_by": "Anis Bouziad Script Pipeline"
-        }
-        cursor.execute(
-            """
-            INSERT INTO SystemLogs (user_id, module, action, details, ip_address)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (
-                args.log_user_id,
-                "ReceptionStockConsistencyRepair",
-                "[UPDATE] hide_transfer_batches_from_reception()",
-                json.dumps(log_details, ensure_ascii=False, default=_json_default),
-                "127.0.0.1",
-            ),
-        )
+            total_repairs += len(repairs)
+            print(f"المجاميع الجديدة بعد الإصلاح: HT={after_totals['Invoice_Total_HT']} | TTC={after_totals['Invoice_Total_TTC']}")
+            print(f" 🎉 تم الانتهاء من إصلاح المستند {br_id}!")
 
-        conn.commit()
-        print(f"\nالمجاميع الجديدة بعد الإصلاح الحقيقي: HT={after_totals['Invoice_Total_HT']} | TTC={after_totals['Invoice_Total_TTC']}")
-        print(" 🎉 تم تطبيق الإصلاح بالكامل وحفظ البيانات بنجاح تام!")
+        if args.apply:
+            conn.commit()
+            _print_section("النتيجة النهائية")
+            print(f"تم تطبيق الإصلاحات بنجاح وحفظها في قاعدة البيانات! إجمالي السطور المصلحة: {total_repairs}")
+        else:
+            conn.rollback()
+            _print_section("النتيجة النهائية")
+            print("لم يتم حفظ أي تغييرات (Dry-Run).")
+
         return 0
-        
+
     except Exception as e:
         conn.rollback()
         print(f"\n ❌ حدث خطأ غير متوقع أثناء معالجة البيانات: {e}")

@@ -9,44 +9,44 @@ import hashlib
 # 1. PERMISSIONS DEFINITION (Granular Control)
 # =============================================================================
 _ALL_PERMISSIONS = [
-    "nav_dashboard", 
-    "nav_data", 
-    "nav_procurement", 
+    "nav_dashboard",
+    "nav_data",
+    "nav_procurement",
     "nav_inventory",
-    "nav_services", 
-    "nav_history",    
+    "nav_services",
+    "nav_history",
     "nav_inventaire",
     "nav_settings",
     "nav_market",
     "nav_sales",
 
-    "tab_dash_overview", 
-    "tab_dash_reception", 
-    "tab_dash_consumption", 
-    "tab_dash_valuation", 
-    "tab_dash_waste", 
+    "tab_dash_overview",
+    "tab_dash_reception",
+    "tab_dash_consumption",
+    "tab_dash_valuation",
+    "tab_dash_waste",
     "tab_dash_alerts",
-    
+
     # --- تبويبات البيانات الأساسية (Master Data) ---
-    "tab_data_products", 
-    "tab_data_families", 
-    "tab_data_units", 
-    "tab_data_suppliers", 
-    "tab_data_manufacturers", 
-    "tab_data_partners", 
-    "tab_data_automates", 
-    "tab_data_locations", 
+    "tab_data_products",
+    "tab_data_families",
+    "tab_data_units",
+    "tab_data_suppliers",
+    "tab_data_manufacturers",
+    "tab_data_partners",
+    "tab_data_automates",
+    "tab_data_locations",
     "tab_data_waste_reasons",
     "tab_clients",
 
     # --- تبويبات المشتريات (Procurement) ---
-    "tab_proc_po", 
-    "tab_proc_reception", 
-    "tab_proc_credit", 
+    "tab_proc_po",
+    "tab_proc_reception",
+    "tab_proc_credit",
     "tab_proc_reclamation",
 
     # --- تبويبات المخزن (Inventory) ---
-    "tab_inv_list", 
+    "tab_inv_list",
     "tab_inv_dispatch",
     "tab_inv_financials",
 
@@ -59,21 +59,21 @@ _ALL_PERMISSIONS = [
     "tab_sales_payments",
 
     # --- تبويبات الإعدادات (Settings) ---
-    "tab_config", 
-    "tab_set_db", 
-    "tab_set_printer", 
-    "tab_set_system", 
-    "tab_system_logs", 
-    "tab_set_pdf", 
+    "tab_config",
+    "tab_set_db",
+    "tab_set_printer",
+    "tab_set_system",
+    "tab_system_logs",
+    "tab_set_pdf",
     "tab_users",
-    
+
     # --- الإجراءات (Actions) ---
-    "act_add_product", 
-    "act_edit_product", 
-    "act_delete_product", 
-    "act_create_po", 
-    "act_approve_po", 
-    "act_receive_po", 
+    "act_add_product",
+    "act_edit_product",
+    "act_delete_product",
+    "act_create_po",
+    "act_approve_po",
+    "act_receive_po",
     "act_inventory_create",
     "act_inventory_scan",
     "act_inventory_apply",
@@ -103,9 +103,16 @@ SCHEMA_QUERIES = [
         Permissions JSON DEFAULT NULL,
         Created_At TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );""",
-    
+
     # [Migration]: Ensure Permissions column exists for older DBs
     """ALTER TABLE Users ADD COLUMN Permissions JSON DEFAULT NULL;""",
+
+    # --- 1.1 Company/PDF Settings ---
+    """CREATE TABLE IF NOT EXISTS Company_Settings (
+        Settings_ID INT PRIMARY KEY DEFAULT 1,
+        Settings_Data JSON,
+        Banner_Image LONGBLOB
+    );""",
 
     # --- 2. Master Data ---
     """CREATE TABLE IF NOT EXISTS Location_Types (
@@ -269,7 +276,7 @@ SCHEMA_QUERIES = [
         FOREIGN KEY (Created_By) REFERENCES Users(User_ID)
     );
     """,
-    
+
     # [Migration]: Purchase_Orders
     """ALTER TABLE Purchase_Orders ADD COLUMN Supplier_Invoice_Ref VARCHAR(150) NULL;""",
     """ALTER TABLE Purchase_Orders ADD COLUMN Deleted_At DATETIME NULL;""",
@@ -315,7 +322,7 @@ SCHEMA_QUERIES = [
         FOREIGN KEY (Received_By) REFERENCES Users(User_ID)
     );
     """,
-    
+
     # [Migration]: Reception_Log
     """ALTER TABLE Reception_Log ADD COLUMN Variance_Notes TEXT NULL;""",
     """ALTER TABLE Reception_Log ADD COLUMN Total_Discount DECIMAL(15,2) DEFAULT 0.00;""",
@@ -442,14 +449,19 @@ SCHEMA_QUERIES = [
         Transfer_ID INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         Transaction_Date DATETIME DEFAULT CURRENT_TIMESTAMP,
         Partner_ID INT UNSIGNED NOT NULL,
-        Transfer_Type ENUM('Free', 'Paid') DEFAULT 'Free',
+        Transfer_Type ENUM('Outbound', 'Return', 'Free', 'Paid') DEFAULT 'Outbound',
         Total_Amount DECIMAL(15, 2) DEFAULT 0.00,
         Status ENUM('Draft', 'Completed', 'Cancelled') DEFAULT 'Draft',
         Notes TEXT,
+        Ref_Transfer_ID INT UNSIGNED NULL DEFAULT NULL,
         Created_By INT UNSIGNED,
         FOREIGN KEY (Partner_ID) REFERENCES External_Partners(Partner_ID) ON UPDATE CASCADE,
+        FOREIGN KEY (Ref_Transfer_ID) REFERENCES External_Transfer_Log(Transfer_ID) ON DELETE SET NULL,
         FOREIGN KEY (Created_By) REFERENCES Users(User_ID)
     );""",
+    """ALTER TABLE External_Transfer_Log MODIFY COLUMN Transfer_Type ENUM('Outbound', 'Return', 'Free', 'Paid') DEFAULT 'Outbound';""",
+    """ALTER TABLE External_Transfer_Log ADD COLUMN Ref_Transfer_ID INT UNSIGNED NULL DEFAULT NULL;""",
+    """ALTER TABLE External_Transfer_Log ADD CONSTRAINT fk_ref_transfer FOREIGN KEY (Ref_Transfer_ID) REFERENCES External_Transfer_Log(Transfer_ID) ON DELETE SET NULL;""",
     """ALTER TABLE external_partners MODIFY COLUMN Partner_Type ENUM('Laboratory', 'Doctor', 'Hospital', 'Pharmacy', 'CareRoom', 'Clinic', 'Other');""",
 
     """CREATE TABLE IF NOT EXISTS External_Transfer_Details (
@@ -575,7 +587,7 @@ SCHEMA_QUERIES = [
         Movement_Type ENUM(
             'Purchase_Receive', 'Open_Pack', 'Patient_Test', 'QC_Run',
             'Calibration', 'Adjustment', 'Waste', 'Transfer',
-            'External_Transfer', 'Return_To_Supplier', 'Sale', 'Sale_Return'
+            'External_Transfer', 'Transfer_Return', 'Return_To_Supplier', 'Sale', 'Sale_Return'
         ) NOT NULL,
         Reason_ID INT UNSIGNED NULL,
         Qty_Change DECIMAL(10, 2) NOT NULL,
@@ -589,7 +601,7 @@ SCHEMA_QUERIES = [
         FOREIGN KEY (Reason_ID) REFERENCES Waste_Reasons(Reason_ID) ON DELETE SET NULL ON UPDATE CASCADE
     );""",
 
-    """ALTER TABLE Stock_Movement_Log MODIFY COLUMN Movement_Type ENUM('Purchase_Receive', 'Open_Pack', 'Patient_Test', 'QC_Run', 'Calibration', 'Adjustment', 'Waste', 'Transfer', 'External_Transfer', 'Return_To_Supplier', 'Sale', 'Sale_Return') NOT NULL;""",
+    """ALTER TABLE Stock_Movement_Log MODIFY COLUMN Movement_Type ENUM('Purchase_Receive', 'Open_Pack', 'Patient_Test', 'QC_Run', 'Calibration', 'Adjustment', 'Waste', 'Transfer', 'External_Transfer', 'Transfer_Return', 'Return_To_Supplier', 'Sale', 'Sale_Return') NOT NULL;""",
 
     """CREATE TABLE IF NOT EXISTS Supplier_Credit_Notes (
         Credit_Note_ID INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -638,7 +650,7 @@ SCHEMA_QUERIES = [
         FOREIGN KEY (Supplier_ID) REFERENCES Suppliers(Supplier_ID) ON UPDATE CASCADE,
         FOREIGN KEY (Created_By) REFERENCES Users(User_ID)
     );""",
-    
+
     # [Migration]: Supplier_Payments
     """ALTER TABLE Supplier_Payments ADD COLUMN BR_ID INT UNSIGNED NULL;""",
     """ALTER TABLE Supplier_Payments ADD CONSTRAINT fk_payment_br FOREIGN KEY (BR_ID) REFERENCES Reception_Log(BR_ID) ON DELETE SET NULL;""",
@@ -675,6 +687,7 @@ INDEX_QUERIES = [
     "CREATE INDEX idx_reception_details_br ON Reception_Details(BR_ID);",
     "CREATE INDEX idx_reception_details_product ON Reception_Details(Product_ID);",
     "CREATE INDEX idx_partner_name ON External_Partners(Partner_Name);",
+    "CREATE INDEX idx_transfer_date ON External_Transfer_Log(Transaction_Date);",
     "CREATE INDEX idx_transfer_partner ON External_Transfer_Log(Partner_ID);",
     "CREATE INDEX idx_sales_client ON Sales_Invoices(Client_ID);",
     "CREATE INDEX idx_sales_date ON Sales_Invoices(Invoice_Date);",
@@ -689,12 +702,12 @@ class SchemaInitializerMixin:
     def _create_default_admin(self, cursor):
         cursor.execute("SELECT User_ID FROM Users WHERE Username = 'admin'")
         admin_exists = cursor.fetchone()
-        
+
         perms_dict = {perm: True for perm in _ALL_PERMISSIONS}
         perms_json = json.dumps(perms_dict)
-        
+
         plain_pw = "admin123"
-        
+
         if not admin_exists:
             logging.info("Creating default Admin account...")
             query = """
@@ -706,7 +719,7 @@ class SchemaInitializerMixin:
             logging.info("Updating Admin permissions to include new modules...")
             query = "UPDATE Users SET Permissions = %s WHERE Username = 'admin'"
             cursor.execute(query, (perms_json,))
-            
+
     def _initialize_schema(self):
         try:
             with self.get_db_connection() as conn:
@@ -714,7 +727,7 @@ class SchemaInitializerMixin:
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 0;")
 
                 logging.info("Initializing schema tables and migrations...")
-                
+
                 # Execute all schema creation and migration queries in one go
                 for query in SCHEMA_QUERIES:
                     try:

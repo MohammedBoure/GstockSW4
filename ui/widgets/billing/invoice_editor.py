@@ -1,11 +1,11 @@
 import logging
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QHeaderView, 
-    QCompleter, QPushButton, QLabel, QLineEdit, QComboBox, 
-    QDateEdit, QGroupBox, QSpinBox, QDoubleSpinBox, QMessageBox, 
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QHeaderView,
+    QCompleter, QPushButton, QLabel, QLineEdit, QComboBox,
+    QDateEdit, QDateTimeEdit, QGroupBox, QSpinBox, QDoubleSpinBox, QMessageBox,
     QTableWidgetItem, QFrame, QAbstractItemView
 )
-from PySide6.QtCore import Qt, QDate, Signal, QStringListModel, QTimer
+from PySide6.QtCore import Qt, QDate, QDateTime, Signal, QStringListModel, QTimer
 from PySide6.QtGui import QColor, QFont
 import qtawesome as qta
 
@@ -49,10 +49,13 @@ class InvoiceEditorWidget(QWidget):
         self.is_loading_transfer = False
         self.is_persisting_transfer = False
         self.last_persist_signature = None
-        
+        self.transfer_type_mode = 'Outbound'
+        self.locked_return_partner_id = None
+        self.allowed_return_batch_ids = set()
+
         self.init_ui()
         self.apply_internal_styles()
-        
+
 
     def apply_internal_styles(self):
         """تحسينات إضافية تتوافق مع ملف QSS الرئيسي"""
@@ -100,10 +103,10 @@ class InvoiceEditorWidget(QWidget):
         self.btn_back.setCursor(Qt.PointingHandCursor)
         self.btn_back.setStyleSheet("border: none; font-weight: bold; font-size: 14px; color: #2c3e50;")
         self.btn_back.clicked.connect(self.request_back.emit)
-        
+
         self.lbl_title = QLabel("NOUVELLE FACTURE / BL")
         self.lbl_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #007572;")
-        
+
         top_bar.addWidget(self.btn_back)
         top_bar.addStretch()
         top_bar.addWidget(self.lbl_title)
@@ -112,11 +115,12 @@ class InvoiceEditorWidget(QWidget):
         # --- 2. بطاقة المعلومات العامة ---
         header_group = QGroupBox("Informations Générales")
         h_layout = QHBoxLayout(header_group)
-        
-        self.inp_date = QDateEdit(QDate.currentDate())
+
+        self.inp_date = QDateTimeEdit(QDateTime.currentDateTime())
+        self.inp_date.setDisplayFormat("dd/MM/yyyy HH:mm")
         self.inp_date.setCalendarPopup(True)
         self.inp_date.setMinimumHeight(40)
-        
+
         self.combo_partner = QComboBox()
         self.combo_partner.setMinimumHeight(40)
         self.btn_validate_header = QPushButton("Valider l'en-tete")
@@ -125,7 +129,8 @@ class InvoiceEditorWidget(QWidget):
         self.btn_validate_header.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; border-radius: 6px; padding: 0 16px;")
         self.btn_validate_header.clicked.connect(self.handle_header_click)
         self.combo_partner.setPlaceholderText("Sélectionner un client...")
-        
+        self.combo_partner.currentIndexChanged.connect(self.on_partner_changed)
+
         h_layout.addWidget(QLabel("Date :"))
         h_layout.addWidget(self.inp_date)
         h_layout.addSpacing(40)
@@ -139,27 +144,27 @@ class InvoiceEditorWidget(QWidget):
         items_layout = QVBoxLayout(items_group)
 
         # حقل البحث الذكي (تم التغيير إلى BarcodeLineEdit لدعم أجهزة المسح)
-        self.barcode_input = BarcodeLineEdit() 
+        self.barcode_input = BarcodeLineEdit()
         self.barcode_input.setObjectName("smart_search")
         self.barcode_input.setPlaceholderText("🔎 Scanner le code-barres ou rechercher par Nom, Lot...")
-        
+
         # إعداد الـ Completer
         self.completer = QCompleter(self)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.completer.setFilterMode(Qt.MatchContains)
         self.completer.setCompletionMode(QCompleter.PopupCompletion)
         self.barcode_input.setCompleter(self.completer)
-        
+
         self.completer.activated.connect(self.on_search_selected)
         self.barcode_input.returnPressed.connect(self.handle_barcode_scan)
-        
+
         items_layout.addWidget(self.barcode_input)
 
         # الجدول
         self.table = QTableWidget(0, 6)
-        headers = ["Article / Lot / Stock", "Quantité", "P.U (DA)", "Observation", "Total", ""]
+        headers = ["Article / Lot / Stock", "Quantité", "P.U", "Observation", "Total", ""]
         self.table.setHorizontalHeaderLabels(headers)
-        
+
         h_header = self.table.horizontalHeader()
         h_header.setSectionResizeMode(0, QHeaderView.Stretch)
         h_header.setSectionResizeMode(3, QHeaderView.Stretch)
@@ -167,12 +172,12 @@ class InvoiceEditorWidget(QWidget):
         self.table.setColumnWidth(2, 130)
         self.table.setColumnWidth(4, 130)
         self.table.setColumnWidth(5, 40)
-        
+
         self.table.verticalHeader().setDefaultSectionSize(45)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        
+
         items_layout.addWidget(self.table)
         layout.addWidget(items_group)
 
@@ -183,11 +188,12 @@ class InvoiceEditorWidget(QWidget):
 
         self.lbl_total = QLabel("0.00 DA")
         self.lbl_total.setStyleSheet("font-size: 26px; font-weight: bold; color: #c0392b;")
-        
+
         footer_layout.addWidget(QLabel("<b>MONTANT TOTAL À PAYER :</b>"))
         footer_layout.addWidget(self.lbl_total)
         footer_layout.addStretch()
         layout.addWidget(footer_frame)
+        header_group.raise_()
         self.barcode_input.textChanged.connect(self.check_instant_barcode)
 
     # =========================================================================
@@ -195,37 +201,77 @@ class InvoiceEditorWidget(QWidget):
     # =========================================================================
 
 
+    def is_return_mode(self):
+        return getattr(self, 'transfer_type_mode', 'Outbound') == 'Return'
+
+    def get_effective_return_partner_id(self):
+        if not self.is_return_mode():
+            return None
+
+        partner_id = self.locked_return_partner_id or self.combo_partner.currentData()
+        try:
+            return int(partner_id) if partner_id else None
+        except (TypeError, ValueError):
+            return None
+
+    def sync_return_partner_combo(self, partner_id):
+        if not partner_id:
+            return
+        index = self.combo_partner.findData(partner_id)
+        if index >= 0 and self.combo_partner.currentIndex() != index:
+            previous_block = self.combo_partner.blockSignals(True)
+            self.combo_partner.setCurrentIndex(index)
+            self.combo_partner.blockSignals(previous_block)
+
+    def on_partner_changed(self):
+        if self.is_return_mode():
+            partner_id = self.get_effective_return_partner_id()
+            if partner_id and not self.locked_return_partner_id:
+                self.locked_return_partner_id = partner_id
+            self.sync_return_partner_combo(partner_id)
+            self.refresh_batches_cache(include_zero=True)
+            self.table.setRowCount(0)
+
     def load_transfer_data(self, transfer_id, details=None):
         try:
             mgr = self.manager.external_transfers
             all_transfers = mgr.get_all_transfers()
             header = next((t for t in all_transfers if t['Transfer_ID'] == transfer_id), None)
-            
+
             if header:
                 index = self.combo_partner.findData(header['Partner_ID'])
-                if index >= 0: self.combo_partner.setCurrentIndex(index)
+                if index >= 0:
+                    previous_block = self.combo_partner.blockSignals(True)
+                    self.combo_partner.setCurrentIndex(index)
+                    self.combo_partner.blockSignals(previous_block)
                 if header.get('Transaction_Date'):
-                    self.inp_date.setDate(QDate.fromString(str(header['Transaction_Date'])[:10], "yyyy-MM-dd"))
-                # تعيين التاريخ ...
+                    dt_str = str(header['Transaction_Date'])
+                    if len(dt_str) >= 16: # Format: YYYY-MM-DD HH:MM...
+                        self.inp_date.setDateTime(QDateTime.fromString(dt_str[:16], "yyyy-MM-dd HH:mm"))
+                    else:
+                        self.inp_date.setDate(QDate.fromString(dt_str[:10], "yyyy-MM-dd"))
 
             if details is None:
                 details = mgr.get_transfer_details(transfer_id)
             self.table.setRowCount(0)
             self.is_loading_transfer = True
-            
+
+            if header and header.get('Ref_Transfer_ID'):
+                self.ref_transfer_id = header.get('Ref_Transfer_ID')
+
             for item in details:
                 batch_data = next((b for b in self.batches_cache if b['Batch_ID'] == item['Batch_ID']), None)
-                
+
                 if batch_data:
                     # نمرر الكمية القديمة هنا ليتم احتسابها ضمن الحد الأقصى
                     saved_qty = int(item['Qty_Transferred'])
                     self.add_batch_to_invoice(batch_data, initial_qty=saved_qty)
-                    
+
                     # تحديث السعر والملاحظة للسطر المضاف
                     last_row = self.table.rowCount() - 1
                     self.table.cellWidget(last_row, 2).setValue(float(item['Unit_Price']))
                     self.table.cellWidget(last_row, 3).setText(item.get('Line_Note', ''))
-            
+
             self.is_loading_transfer = False
             self.calc_totals()
             self.last_persist_signature = self.items_signature(self.build_items_data())
@@ -249,30 +295,59 @@ class InvoiceEditorWidget(QWidget):
             self.current_transfer_batch_ids.add(batch_id)
             self.current_transfer_qty_by_batch[batch_id] = float(item.get('Qty_Transferred') or 0)
 
-    def load_context(self, transfer_id=None):
+    def load_context(self, transfer_id=None, preselected_partner_id=None):
         """تحميل الواجهة وتحديد هل نحتاج للمنتجات الصفرية أم لا."""
         self.current_id = transfer_id
         self.table.setRowCount(0)
         self.last_persist_signature = None
-        
-        # إذا كان هناك ID، فهذا يعني "تعديل"، لذا نحتاج لجلب المنتجات الصفرية
+        self.locked_return_partner_id = None
+        self.allowed_return_batch_ids = set()
+        header = None
+
+        if transfer_id:
+            try:
+                mgr = self.manager.external_transfers
+                all_transfers = mgr.get_all_transfers()
+                header = next((t for t in all_transfers if t['Transfer_ID'] == transfer_id), None)
+                if header:
+                    self.transfer_type_mode = header.get('Transfer_Type') or 'Outbound'
+            except Exception as e:
+                logging.error(f"Error fetching transfer type: {e}")
+
+        ttype = getattr(self, 'transfer_type_mode', 'Outbound')
+        partner_to_select = header.get('Partner_ID') if header else preselected_partner_id
+        if ttype == 'Return' and partner_to_select:
+            self.locked_return_partner_id = int(partner_to_select)
+
         self.prepare_transfer_scope(transfer_id)
+
+        previous_block = self.combo_partner.blockSignals(True)
+        self.load_partners()
+        if partner_to_select:
+            index = self.combo_partner.findData(partner_to_select)
+            if index >= 0:
+                self.combo_partner.setCurrentIndex(index)
+        self.combo_partner.blockSignals(previous_block)
+
         include_zero = True if transfer_id else False
         self.refresh_batches_cache(include_zero=include_zero)
-        
-        self.load_partners() #
-        
+
         if transfer_id:
-            # التعديل هنا: عرض المعرف المنسق في العنوان
             formatted_ref = self.format_id(transfer_id)
-            self.lbl_title.setText(f"MODIFICATION TRANSACTION N° {formatted_ref}")
+            if ttype == 'Return':
+                self.lbl_title.setText(f"MODIFICATION BON DE RETOUR N° {formatted_ref}")
+            else:
+                self.lbl_title.setText(f"MODIFICATION TRANSACTION N° {formatted_ref}")
             self.load_transfer_data(transfer_id, self.current_transfer_details)
         else:
-            self.lbl_title.setText("NOUVELLE TRANSACTION / BL")
+            if ttype == 'Return':
+                self.lbl_title.setText("NOUVEAU BON DE RETOUR")
+            else:
+                self.lbl_title.setText("NOUVELLE TRANSACTION / BL")
             self.inp_date.setDate(QDate.currentDate())
         self.set_header_enabled(not bool(transfer_id))
-        
-        self.calc_totals() #
+
+        self.calc_totals()
         self.barcode_input.setFocus()
 
     def load_partners(self):
@@ -289,7 +364,7 @@ class InvoiceEditorWidget(QWidget):
 
     def set_header_enabled(self, enabled):
         self.inp_date.setEnabled(enabled)
-        self.combo_partner.setEnabled(enabled)
+        self.combo_partner.setEnabled(enabled and not self.locked_return_partner_id)
         if enabled:
             self.btn_validate_header.setText("Valider l'en-tete")
             self.btn_validate_header.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; border-radius: 6px; padding: 0 16px;")
@@ -298,17 +373,32 @@ class InvoiceEditorWidget(QWidget):
             self.btn_validate_header.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold; border-radius: 6px; padding: 0 16px;")
 
     def save_header_only(self, show_message=True):
-        partner_id = self.combo_partner.currentData()
+        transfer_type = getattr(self, 'transfer_type_mode', 'Outbound')
+        partner_id = self.get_effective_return_partner_id() if transfer_type == 'Return' else self.combo_partner.currentData()
         if not partner_id:
             QMessageBox.warning(self, "Attention", "Veuillez selectionner un partenaire.")
             return False
 
-        transaction_date = self.inp_date.date().toString("yyyy-MM-dd") + " 00:00:00"
+        if transfer_type == 'Return':
+            partner_id = int(partner_id)
+            if self.locked_return_partner_id and partner_id != self.locked_return_partner_id:
+                QMessageBox.warning(self, "Attention", "Le bon de retour doit garder le meme partenaire que le transfert d'origine.")
+                return False
+            self.locked_return_partner_id = partner_id
+            self.sync_return_partner_combo(partner_id)
+
+        if self.locked_return_partner_id and int(partner_id) != self.locked_return_partner_id:
+            QMessageBox.warning(self, "Attention", "Le bon de retour doit garder le meme partenaire que le transfert d'origine.")
+            return False
+
+        transaction_date = self.inp_date.dateTime().toString("yyyy-MM-dd HH:mm:ss")
         success, msg, transfer_id = self.manager.external_transfers.save_transfer_header_only(
             self.current_id,
             partner_id,
             transaction_date,
-            self.get_current_user_id()
+            self.get_current_user_id(),
+            transfer_type=transfer_type,
+            ref_transfer_id=getattr(self, 'ref_transfer_id', None)
         )
 
         if not success:
@@ -316,7 +406,8 @@ class InvoiceEditorWidget(QWidget):
             return False
 
         self.current_id = transfer_id
-        self.lbl_title.setText(f"TRANSACTION / BL N° {self.format_id(transfer_id)}")
+        doc_label = "Retourné à Sous-Traitant" if transfer_type == 'Return' else "TRANSACTION / BL"
+        self.lbl_title.setText(f"{doc_label} N° {self.format_id(transfer_id)}")
         self.set_header_enabled(False)
         if show_message:
             QMessageBox.information(self, "Succes", "L'en-tete a ete enregistre.")
@@ -332,49 +423,75 @@ class InvoiceEditorWidget(QWidget):
     def check_instant_barcode(self, text):
         """التحقق من الباركود بمجرد الكتابة أو المسح"""
         clean_text = text.strip().lower()
-        
+
         # إذا كان النص المكتوب يطابق تماماً أحد الأكواد في القاموس
         if clean_text in self.barcode_map:
             batch = self.barcode_map[clean_text]
-            
+            added = self.add_batch_to_invoice(batch)
+
             # منع التكرار الفوري الناتج عن سرعة الماسح
-            self.barcode_input.blockSignals(True) 
-            self.add_batch_to_invoice(batch) # استدعاء دالة الإضافة الأصلية
+            self.barcode_input.blockSignals(True)
+            # استدعاء دالة الإضافة الأصلية
             self.barcode_input.clear()
             self.barcode_input.blockSignals(False)
-            
+
             # تأثير بصري للنجاح
-            self.barcode_input.setStyleSheet("border: 2px solid #2ecc71; background-color: #e8f5e9;")
+            color = "#2ecc71" if added else "#e74c3c"
+            self.barcode_input.setStyleSheet(f"border: 2px solid {color}; background-color: #e8f5e9;")
             QTimer.singleShot(500, lambda: self.barcode_input.setStyleSheet(""))
 
     def refresh_batches_cache(self, include_zero=False):
         """
-        تحديث الكاش مع السماح بجلب الكميات الصفرية في حالة التعديل 
+        تحديث الكاش مع السماح بجلب الكميات الصفرية في حالة التعديل
         لضمان ظهور المنتجات المباعة بالكامل.
         """
         if hasattr(self.manager, 'batches'):
             # إذا كنا في وضع التعديل، نطلب من المدير جلب حتى المنتجات الصفرية
-            all_batches = self.manager.batches.get_all_batches_with_details(
-                include_zero_stock=include_zero
-            )
+            ttype = getattr(self, 'transfer_type_mode', 'Outbound')
+            if ttype == 'Return':
+                partner_id = self.get_effective_return_partner_id()
+                if partner_id:
+                    self.sync_return_partner_combo(partner_id)
+                    all_batches = self.manager.external_transfers.get_returnable_batches_for_partner(partner_id, exclude_return_transfer_id=self.current_id, ref_transfer_id=getattr(self, 'ref_transfer_id', None))
+                    self.barcode_input.setPlaceholderText("🔎 Scanner le code-barres ou rechercher par Nom, Lot...")
+                    self.barcode_input.setEnabled(True)
+                else:
+                    all_batches = []
+                    self.barcode_input.setPlaceholderText("⚠️ Veuillez d'abord sélectionner un client pour le retour...")
+                    self.barcode_input.setEnabled(False)
+            else:
+                self.barcode_input.setPlaceholderText("🔎 Scanner le code-barres ou rechercher par Nom, Lot...")
+                self.barcode_input.setEnabled(True)
+                all_batches = self.manager.batches.get_all_batches_with_details(
+                    include_zero_stock=include_zero
+                )
             self.batches_cache = self.filter_batches_for_transfer_scope(all_batches)
-            
+            self.allowed_return_batch_ids = set()
+
             suggestions = []
             self.search_map = {}
             self.barcode_map = {}
 
             for b in self.batches_cache:
-                qty = quantity_to_int(b['Quantity_Current'])
+                qty_source = b.get('Available_To_Return') if ttype == 'Return' else b.get('Quantity_Current')
+                qty = quantity_to_int(qty_source or 0)
                 batch_id = b.get('Batch_ID')
                 is_current_transfer_batch = batch_id in self.current_transfer_batch_ids
-                
+                if ttype == 'Return':
+                    if not self.is_return_batch_allowed(b, allow_zero=True):
+                        continue
+                    try:
+                        self.allowed_return_batch_ids.add(int(batch_id))
+                    except (TypeError, ValueError):
+                        continue
+
                 # بناء الفهارس للبحث السريع
                 if b.get('Internal_Barcode'):
                     self.barcode_map[str(b['Internal_Barcode']).strip().lower()] = b
                 if b.get('Barcode'):
                     self.barcode_map[str(b['Barcode']).strip().lower()] = b
 
-                # في قائمة البحث (الاقتراحات)، نظهر فقط ما هو أكبر من الصفر 
+                # في قائمة البحث (الاقتراحات)، نظهر فقط ما هو أكبر من الصفر
                 # لكي لا يختار المستخدم منتجاً منتهياً بالخطأ في فاتورة جديدة
                 # Edit mode also keeps lots already present in this BL.
                 if qty > 0 or is_current_transfer_batch:
@@ -385,6 +502,33 @@ class InvoiceEditorWidget(QWidget):
 
             self.completer.setModel(QStringListModel(suggestions))
 
+    def is_return_batch_allowed(self, batch, allow_zero=False):
+        if not self.is_return_mode():
+            return True
+
+        partner_id = self.get_effective_return_partner_id()
+        if not partner_id or not batch:
+            return False
+
+        batch_partner_id = batch.get('Partner_ID')
+        if batch_partner_id is not None:
+            try:
+                if int(batch_partner_id) != int(partner_id):
+                    return False
+            except (TypeError, ValueError):
+                return False
+
+        try:
+            batch_id = int(batch.get('Batch_ID'))
+        except (TypeError, ValueError):
+            return False
+
+        qty = quantity_to_int(batch.get('Available_To_Return') or 0)
+        if allow_zero:
+            return qty > 0 or batch_id in self.current_transfer_batch_ids
+
+        return batch_id in self.allowed_return_batch_ids and (qty > 0 or batch_id in self.current_transfer_batch_ids)
+
     def filter_batches_for_transfer_scope(self, batches):
         if not self.current_id:
             return batches
@@ -392,7 +536,8 @@ class InvoiceEditorWidget(QWidget):
         scoped_batches = []
         for batch in batches:
             batch_id = batch.get('Batch_ID')
-            qty = quantity_to_int(batch.get('Quantity_Current') or 0)
+            qty_source = batch.get('Available_To_Return') if getattr(self, 'transfer_type_mode', 'Outbound') == 'Return' else batch.get('Quantity_Current')
+            qty = quantity_to_int(qty_source or 0)
             if qty > 0 or batch_id in self.current_transfer_batch_ids:
                 scoped_batches.append(batch)
         return scoped_batches
@@ -413,11 +558,11 @@ class InvoiceEditorWidget(QWidget):
 
     def handle_barcode_scan(self):
         """التعامل مع إدخال الماسح الضوئي (Scanner)"""
-        if self.completer.popup().isVisible(): 
+        if self.completer.popup().isVisible():
             return
-            
+
         raw_text = self.barcode_input.text().strip().lower()
-        if not raw_text: 
+        if not raw_text:
             return
 
         # 1. البحث المباشر في خريطة الباركود (السرعة القصوى)
@@ -441,7 +586,7 @@ class InvoiceEditorWidget(QWidget):
 
         self.barcode_input.clear()
         self.barcode_input.setFocus()
-        
+
     def build_items_data(self):
         items = []
         for r in range(self.table.rowCount()):
@@ -490,18 +635,37 @@ class InvoiceEditorWidget(QWidget):
             return False
 
         items = self.build_items_data()
+        if self.is_return_mode():
+            invalid_batch_ids = [
+                item['batch_id'] for item in items
+                if item['batch_id'] not in self.allowed_return_batch_ids
+                and item['batch_id'] not in self.current_transfer_batch_ids
+            ]
+            if invalid_batch_ids:
+                QMessageBox.warning(self, "Attention", "Certains lots ne sont pas disponibles pour ce sous-traitant.")
+                return False
         signature = self.items_signature(items)
         if signature == self.last_persist_signature:
             return True
 
         self.is_persisting_transfer = True
         try:
-            success, result = self.manager.external_transfers.save_and_sync_stock(
-                self.current_id,
-                self.combo_partner.currentData(),
-                items,
-                self.get_current_user_id()
-            )
+            transfer_type = getattr(self, 'transfer_type_mode', 'Outbound')
+            if transfer_type == 'Return':
+                success, result = self.manager.external_transfers.save_and_sync_return_stock(
+                    self.current_id,
+                    self.get_effective_return_partner_id(),
+                    items,
+                    self.get_current_user_id(),
+                    ref_transfer_id=getattr(self, 'ref_transfer_id', None)
+                )
+            else:
+                success, result = self.manager.external_transfers.save_and_sync_stock(
+                    self.current_id,
+                    self.combo_partner.currentData(),
+                    items,
+                    self.get_current_user_id()
+                )
         finally:
             self.is_persisting_transfer = False
 
@@ -515,6 +679,10 @@ class InvoiceEditorWidget(QWidget):
         return True
 
     def add_batch_to_invoice(self, batch, initial_qty=1):
+        if self.is_return_mode() and not self.is_return_batch_allowed(batch):
+            QMessageBox.warning(self, "Attention", "Ce lot n'appartient pas au sous-traitant selectionne ou n'est plus disponible au retour.")
+            return False
+
         if not self.is_loading_transfer and not self.save_header_only(show_message=False):
             return False
         """إضافة المنتج للجدول مع تصحيح أخطاء sb_qty وربط الحسابات"""
@@ -537,30 +705,35 @@ class InvoiceEditorWidget(QWidget):
         row = self.table.rowCount()
         self.table.insertRow(row)
 
-        p_name = f"{batch['Product_Name']} (Lot: {batch['Lot_Number']}){status_tag}"
+        barcode_display = batch.get('Barcode') or batch.get('Internal_Barcode', 'N/A')
+        p_name = f"{batch['Product_Name']} (Code: {barcode_display} | Lot: {batch['Lot_Number']}){status_tag}"
         q_item = QTableWidgetItem(p_name)
         q_item.setData(Qt.UserRole, {
-            'id': batch['Product_ID'], 
+            'id': batch['Product_ID'],
             'batch_id': batch['Batch_ID'],
             'is_billable': is_billable
         })
         if not is_billable:
-            q_item.setForeground(QColor("#7f8c8d")) 
+            q_item.setForeground(QColor("#7f8c8d"))
         self.table.setItem(row, 0, q_item)
 
         # بناء مربعات الإدخال
-        current_stock = quantity_to_int(batch.get('Quantity_Current', 0))
-        previous_qty = quantity_to_int(self.current_transfer_qty_by_batch.get(batch['Batch_ID'], 0))
-        max_allowed = current_stock + previous_qty
+        if getattr(self, 'transfer_type_mode', 'Outbound') == 'Return':
+            current_stock = quantity_to_int(batch.get('Available_To_Return', 0))
+            max_allowed = current_stock
+        else:
+            current_stock = quantity_to_int(batch.get('Quantity_Current', 0))
+            previous_qty = quantity_to_int(self.current_transfer_qty_by_batch.get(batch['Batch_ID'], 0))
+            max_allowed = current_stock + previous_qty
         if max_allowed <= 0:
             QMessageBox.warning(self, "Stock insuffisant", "Ce lot n'est pas disponible pour cette transaction.")
             return False
         if initial_qty > max_allowed:
             initial_qty = max_allowed
-        
+
         sb_qty = QSpinBox()
         sb_qty.setRange(1, max_allowed); sb_qty.setValue(initial_qty); sb_qty.setAlignment(Qt.AlignCenter)
-        
+
         unit_price = float(batch.get('Unit_Price_Received', 0))
         sb_price = QDoubleSpinBox()
         sb_price.setRange(0, 1000000); sb_price.setValue(unit_price); sb_price.setGroupSeparatorShown(True)
@@ -607,7 +780,14 @@ class InvoiceEditorWidget(QWidget):
             self.persist_current_transfer()
 
     def format_id(self, raw_id):
-        # إذا لم يتوفر التاريخ، نستخدم السنة الحالية
+        try:
+            if hasattr(self.manager, 'external_transfers') and raw_id:
+                transfer = self.manager.external_transfers.get_transfer_by_id(int(raw_id))
+                if transfer and transfer.get('Display_Ref'):
+                    return transfer['Display_Ref']
+        except Exception as e:
+            logging.error(f"Error formatting transfer id {raw_id}: {e}")
+
         year = self.inp_date.date().toString("yyyy")
         return f"{year}/{int(raw_id):03d}"
 
@@ -618,12 +798,12 @@ class InvoiceEditorWidget(QWidget):
             qty_widget = self.table.cellWidget(r, 1)
             price_widget = self.table.cellWidget(r, 2)
             total_label = self.table.cellWidget(r, 4)
-            
+
             if qty_widget and price_widget and total_label:
                 line = qty_widget.value() * price_widget.value()
                 total_label.setText(f"{line:,.2f}")
                 grand += line
-                
+
         self.lbl_total.setText(f"{grand:,.2f} DA")
 
     def save_invoice(self):
@@ -632,12 +812,12 @@ class InvoiceEditorWidget(QWidget):
         تستدعي منطق المزامنة مع المخزون والـ Log.
         """
         partner_id = self.combo_partner.currentData()
-        
+
         # 1. التحقق من اختيار الزبون (المطلب الجديد)
         if not partner_id:
             QMessageBox.warning(
-                self, 
-                "Attention", 
+                self,
+                "Attention",
                 "Veuillez sélectionner un client avant de valider la transaction."
             )
             return
@@ -648,8 +828,8 @@ class InvoiceEditorWidget(QWidget):
 
         if self.table.rowCount() == 0:
             QMessageBox.warning(
-                self, 
-                "Facture Vide", 
+                self,
+                "Facture Vide",
                 "Veuillez ajouter au moins un article à la liste."
             )
             return
@@ -668,7 +848,7 @@ class InvoiceEditorWidget(QWidget):
         for r in range(self.table.rowCount()):
             table_item = self.table.item(r, 0)
             if not table_item: continue
-            
+
             meta = table_item.data(Qt.UserRole)
             items.append({
                 'product_id': meta['id'],
@@ -689,11 +869,11 @@ class InvoiceEditorWidget(QWidget):
             success, result = self.manager.external_transfers.save_and_sync_stock(
                 self.current_id, partner_id, items, u_id
             )
-            
+
             if success:
                 QMessageBox.information(
-                    self, 
-                    "Succès", 
+                    self,
+                    "Succès",
                     "La transaction a été enregistrée et le stock mis à jour avec succès."
                 )
                 self.request_back.emit() # العودة للقائمة

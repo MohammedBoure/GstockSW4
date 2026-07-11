@@ -1,5 +1,5 @@
 # database\__init__.py
-from .base import Database 
+from .base import Database
 from .manufacturer_manager import ManufacturerManager
 from .supplier_manager import SupplierManager
 from .location_manager import LocationManager
@@ -23,6 +23,7 @@ from .external_transfer_manager import ExternalTransferManager
 from .credit_note_manager import CreditNoteManager
 from .inventory_count_manager import InventoryCountManager
 from .system_log_manager import SystemLogManager
+from .company_settings_manager import CompanySettingsManager
 from .system_logger import active_user_id,log_methods
 
 # Sales Modules
@@ -34,28 +35,28 @@ class LabDataManager:
 
     def __init__(self, db_instance: Database):
         self.db = db_instance
-        
+
         # 1. Master Data Managers
         self.manufacturers = ManufacturerManager(db_instance)
         self.suppliers = SupplierManager(db_instance)
         self.locations = LocationManager(db_instance)
         self.automates = AutomateManager(db_instance)
         self.waste_reasons = WasteReasonManager(db_instance)
-        self.families = ProductFamilyManager(db_instance)      
-        self.packaging_units = PackagingUnitManager(db_instance) 
-        
+        self.families = ProductFamilyManager(db_instance)
+        self.packaging_units = PackagingUnitManager(db_instance)
+
         # 2. Product/Document Managers
         self.products = ProductManager(db_instance)
         self.documents = ProductDocumentManager(db_instance)
-        
+
         # 3. Procurement Managers
         self.po = PurchaseOrderManager(db_instance)
-        self.po_details = PODetailsManager(db_instance, self.po) 
+        self.po_details = PODetailsManager(db_instance, self.po)
         self.reception = ReceptionLogManager(db_instance)
-        
+
         # 4. Inventory Managers (Logic core)
         self.batches = InventoryBatchManager(db_instance)
-        self.containers = ActiveContainerManager(db_instance) 
+        self.containers = ActiveContainerManager(db_instance)
         self.movement = StockMovementLogManager(db_instance)
 
         # 5. Utilities & Reporting
@@ -71,6 +72,7 @@ class LabDataManager:
         self.inventory_counts = InventoryCountManager(db_instance)
 
         self.system_log = SystemLogManager(db_instance)
+        self.company_settings = CompanySettingsManager(db_instance)
 
         # 6. Sales & Clients Managers
         self.clients = ClientManager(db_instance)

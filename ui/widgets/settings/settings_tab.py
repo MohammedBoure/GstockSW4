@@ -3,10 +3,10 @@
 import json
 import os
 import logging
-import win32print 
+import win32print
 from datetime import datetime
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                               QLineEdit, QPushButton, QGroupBox, QFormLayout, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                               QLineEdit, QPushButton, QGroupBox, QFormLayout,
                                QSpinBox, QMessageBox, QFileDialog, QTabWidget,
                                QComboBox, QInputDialog, QCheckBox, QDoubleSpinBox,
                                QListWidget, QTextEdit)
@@ -16,7 +16,7 @@ import mysql.connector
 import sys
 from dotenv import dotenv_values
 
-from .pdf_config_tab import PdfConfigWidget 
+from .pdf_config_tab import PdfConfigWidget
 from .system_logs_tab import SystemLogsTab
 
 logging.basicConfig(
@@ -33,67 +33,67 @@ def get_external_path(filename):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, filename)
 
-CONFIG_FILE = get_external_path("config.json") 
+CONFIG_FILE = get_external_path("config.json")
 ENV_FILE = get_external_path(".env")
 
 class SettingsTab(QWidget):
     def __init__(self, data_manager):
         super().__init__()
         self.data_manager = data_manager
-        
+
         # Paramètres par défaut
         self.settings = {
             "lab_name": "Laboratoire Algérie",
             "lab_address": "Alger, Algérie",
             "expiry_warning_days": 30,
             "low_stock_threshold": 5,
-            
+
             # --- Auto Backup Settings ---
             "auto_backup_enabled": False,
             "auto_backup_interval": 60.0,
             "auto_backup_password": "",
             "backup_paths": [],
-            
+
             "db_host": "127.0.0.1",
             "db_port": 3306,
             "db_user": "root",
             "db_password": "root",
             "db_name": "Lab_Inventory_Enterprise_DB",
-            
+
             "flask_env": "development",
             "secret_key": "change_me_key",
             "max_content_length": 16777216,
-            
+
             "selected_printer": "",
             "label_width": 50,
             "label_height": 30,
             "gap": 2
         }
-        
+
         self.load_settings()
         self.load_database_settings_from_env()
         self.init_ui()
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
-        
+
         self.tabs = QTabWidget()
-        
+
         # Initialize widgets only
         self.tab_general = QWidget()
         self._setup_general_tab()
-        
+
         self.tab_db = QWidget()
         self._setup_database_tab()
-        
+
         self.tab_printer = QWidget()
         self._setup_printer_tab()
-        
+
         self.tab_system = QWidget()
         self._setup_system_tab()
 
         self.tab_system_logs = SystemLogsTab(self.data_manager) if self.data_manager else QWidget()
-        self.tab_pdf_config = PdfConfigWidget(self.settings)
+        self.tab_pdf_config = PdfConfigWidget(self.data_manager)
 
         main_layout.addWidget(self.tabs)
 
@@ -102,15 +102,15 @@ class SettingsTab(QWidget):
         btn_save = QPushButton("💾 Enregistrer les paramètres")
         btn_save.setStyleSheet("background-color: #27ae60; color: white; padding: 10px; font-weight: bold;")
         btn_save.clicked.connect(self.save_settings)
-        
+
         btn_export_env = QPushButton("📄 Exporter .env")
         btn_export_env.setStyleSheet("background-color: #2980b9; color: white; padding: 10px;")
         btn_export_env.clicked.connect(self.export_to_env_file)
-        
+
         btn_layout.addStretch()
         btn_layout.addWidget(btn_export_env)
         btn_layout.addWidget(btn_save)
-        
+
         main_layout.addLayout(btn_layout)
 
     def _setup_general_tab(self):
@@ -121,13 +121,19 @@ class SettingsTab(QWidget):
         # ---------------------------------------------------------
         # COLONNE GAUCHE
         # ---------------------------------------------------------
-        
+
         grp_info = QGroupBox("📋 Informations du laboratoire")
         form_info = QFormLayout()
         self.txt_lab_name = QLineEdit(self.settings.get("lab_name", ""))
         self.txt_lab_address = QLineEdit(self.settings.get("lab_address", ""))
+        self.txt_lab_nif = QLineEdit(self.settings.get("lab_nif", ""))
+        self.txt_lab_rc = QLineEdit(self.settings.get("lab_rc", ""))
+
         form_info.addRow("Nom du laboratoire :", self.txt_lab_name)
         form_info.addRow("Adresse :", self.txt_lab_address)
+        form_info.addRow("NIF :", self.txt_lab_nif)
+        form_info.addRow("Reg Commerce (RC) :", self.txt_lab_rc)
+
         grp_info.setLayout(form_info)
         left_col.addWidget(grp_info)
 
@@ -145,7 +151,7 @@ class SettingsTab(QWidget):
         form_alerts.addRow("Seuil stock critique :", self.spin_stock)
         grp_alerts.setLayout(form_alerts)
         left_col.addWidget(grp_alerts)
-        
+
         grp_data = QGroupBox("💾 Gestion Manuelle & Archives")
         data_layout = QVBoxLayout()
         row1 = QHBoxLayout()
@@ -157,11 +163,11 @@ class SettingsTab(QWidget):
         row1.addWidget(btn_backup)
         row1.addWidget(btn_restore)
         data_layout.addLayout(row1)
-        
+
         btn_archive = QPushButton("🧹 Archiver les historiques")
         btn_archive.clicked.connect(self.perform_archive_logs)
         data_layout.addWidget(btn_archive)
-        
+
         self.grp_view_mode = QGroupBox("👁️ Mode aperçu archive")
         view_layout = QVBoxLayout()
         self.lbl_mode_status = QLabel("Mode actuel : ✅ Données en direct")
@@ -181,7 +187,7 @@ class SettingsTab(QWidget):
         # ---------------------------------------------------------
         # COLONNE DROITE
         # ---------------------------------------------------------
-        
+
         grp_auto_backup = QGroupBox("⏱️ Sauvegarde Automatique (Arrière-plan)")
         auto_backup_layout = QVBoxLayout()
         form_auto = QFormLayout()
@@ -189,24 +195,29 @@ class SettingsTab(QWidget):
         self.chk_auto_backup = QCheckBox("Activer la sauvegarde automatique")
         # Ensure we are parsing the boolean properly
         self.chk_auto_backup.setChecked(bool(self.settings.get("auto_backup_enabled", False)))
-        
+
         self.spin_auto_interval = QDoubleSpinBox()
-        self.spin_auto_interval.setRange(0.1, 1440.0) 
+        self.spin_auto_interval.setRange(0.1, 1440.0)
         self.spin_auto_interval.setValue(float(self.settings.get("auto_backup_interval", 60.0)))
         self.spin_auto_interval.setSuffix(" min")
-        
+
         self.txt_auto_pwd = QLineEdit(self.settings.get("auto_backup_password", ""))
         self.txt_auto_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self.txt_auto_pwd.setPlaceholderText("Laissez vide pour fichier ZIP normal")
+        self.txt_auto_pwd.setPlaceholderText("Optionnel (Chiffrement AES-256)")
+
+        self.spin_max_backups = QSpinBox()
+        self.spin_max_backups.setRange(1, 100)
+        self.spin_max_backups.setValue(int(self.settings.get("auto_backup_max_files", 5)))
 
         form_auto.addRow("", self.chk_auto_backup)
-        form_auto.addRow("Intervalle :", self.spin_auto_interval)
-        form_auto.addRow("Mot de passe ZIP :", self.txt_auto_pwd)
+        form_auto.addRow("⏱️ Intervalle (Minutes) :", self.spin_auto_interval)
+        form_auto.addRow("🔐 Mot de passe ZIP :", self.txt_auto_pwd)
+        form_auto.addRow("📁 Nbre max de sauvegardes :", self.spin_max_backups)
         auto_backup_layout.addLayout(form_auto)
 
         auto_backup_layout.addWidget(QLabel("Dossiers de destination (Cibles multiples) :"))
         self.list_backup_paths = QListWidget()
-        
+
         paths = self.settings.get("backup_paths", [])
         if not paths and self.settings.get("backup_path"):
             paths = [self.settings.get("backup_path")]
@@ -220,7 +231,7 @@ class SettingsTab(QWidget):
         btn_rem_path.clicked.connect(self.remove_backup_path)
         path_btns_layout.addWidget(btn_add_path)
         path_btns_layout.addWidget(btn_rem_path)
-        
+
         auto_backup_layout.addWidget(self.list_backup_paths)
         auto_backup_layout.addLayout(path_btns_layout)
 
@@ -240,7 +251,7 @@ class SettingsTab(QWidget):
         layout = QVBoxLayout(self.tab_db)
         grp_conn = QGroupBox("Connexion MySQL")
         form_conn = QFormLayout()
-        
+
         self.txt_db_host = QLineEdit(str(self.settings.get("db_host", "")))
         self.spin_db_port = QSpinBox()
         self.spin_db_port.setRange(1, 65535)
@@ -249,7 +260,7 @@ class SettingsTab(QWidget):
         self.txt_db_pass = QLineEdit(str(self.settings.get("db_password", "")))
         self.txt_db_pass.setEchoMode(QLineEdit.EchoMode.Password)
         self.txt_db_name = QLineEdit(str(self.settings.get("db_name", "")))
-        
+
         form_conn.addRow("Hôte :", self.txt_db_host)
         form_conn.addRow("Port :", self.spin_db_port)
         form_conn.addRow("Utilisateur :", self.txt_db_user)
@@ -257,7 +268,7 @@ class SettingsTab(QWidget):
         form_conn.addRow("Base de données :", self.txt_db_name)
         grp_conn.setLayout(form_conn)
         layout.addWidget(grp_conn)
-        
+
         btn_test = QPushButton("🔌 Tester la connexion")
         btn_test.clicked.connect(self.test_db_connection)
         layout.addWidget(btn_test)
@@ -277,7 +288,7 @@ class SettingsTab(QWidget):
         layout = QVBoxLayout(self.tab_printer)
         grp_print = QGroupBox("Paramètres des étiquettes code-barres")
         form_print = QFormLayout()
-        
+
         self.combo_printers = QComboBox()
         try:
             printers = win32print.EnumPrinters(2)
@@ -290,26 +301,26 @@ class SettingsTab(QWidget):
         if current_p:
             idx = self.combo_printers.findText(current_p)
             if idx >= 0: self.combo_printers.setCurrentIndex(idx)
-            
+
         self.spin_width = QSpinBox()
         self.spin_width.setRange(10, 150)
         self.spin_width.setValue(int(self.settings.get("label_width", 50)))
-        
+
         self.spin_height = QSpinBox()
         self.spin_height.setRange(10, 150)
         self.spin_height.setValue(int(self.settings.get("label_height", 30)))
-        
+
         self.spin_gap = QSpinBox()
         self.spin_gap.setRange(0, 10)
         self.spin_gap.setValue(int(self.settings.get("gap", 2)))
-        
+
         form_print.addRow("Imprimante :", self.combo_printers)
         form_print.addRow("Largeur (mm) :", self.spin_width)
         form_print.addRow("Hauteur (mm) :", self.spin_height)
         form_print.addRow("Espacement (mm) :", self.spin_gap)
         grp_print.setLayout(form_print)
         layout.addWidget(grp_print)
-        
+
         btn_test_print = QPushButton("🖨️ Imprimer une étiquette test")
         btn_test_print.clicked.connect(self.test_print_label)
         layout.addWidget(btn_test_print)
@@ -319,7 +330,7 @@ class SettingsTab(QWidget):
         layout = QVBoxLayout(self.tab_system)
         grp_sys = QGroupBox("Variables d'environnement")
         form_sys = QFormLayout()
-        
+
         self.combo_env = QComboBox()
         self.combo_env.addItems(["development", "production"])
         self.combo_env.setCurrentText(self.settings.get("flask_env", "development"))
@@ -327,7 +338,7 @@ class SettingsTab(QWidget):
         self.spin_max_len = QSpinBox()
         self.spin_max_len.setRange(1024, 99999999)
         self.spin_max_len.setValue(int(self.settings.get("max_content_length", 16777216)))
-        
+
         form_sys.addRow("FLASK_ENV :", self.combo_env)
         form_sys.addRow("SECRET_KEY :", self.txt_secret)
         form_sys.addRow("MAX_CONTENT_LENGTH :", self.spin_max_len)
@@ -336,7 +347,7 @@ class SettingsTab(QWidget):
         layout.addStretch()
 
     # --- Fonctions Auto-Backup ---
-    
+
     def add_backup_path(self):
         folder_path = QFileDialog.getExistingDirectory(self, "Sélectionner un dossier de sauvegarde")
         if folder_path:
@@ -355,9 +366,9 @@ class SettingsTab(QWidget):
         if not paths:
             QMessageBox.warning(self, "Attention", "Veuillez ajouter au moins un dossier de destination.")
             return
-            
+
         password = self.txt_auto_pwd.text()
-        
+
         if hasattr(self.data_manager.db, 'create_multi_backup'):
             success, msg = self.data_manager.db.create_multi_backup(paths, password, is_auto=False)
             if success:
@@ -379,7 +390,7 @@ class SettingsTab(QWidget):
                 logging.info("✅ Paramètres chargés avec succès.")
             except Exception as e:
                 logging.error(f"❌ Erreur de lecture du JSON: {e}")
-                QMessageBox.warning(self, "Erreur Lecture", 
+                QMessageBox.warning(self, "Erreur Lecture",
                                     f"Impossible de lire vos anciens paramètres.\nLe fichier {CONFIG_FILE} est peut-être corrompu.\n{e}")
         else:
             logging.warning("⚠️ Fichier config.json introuvable, utilisation des paramètres par défaut.")
@@ -405,50 +416,54 @@ class SettingsTab(QWidget):
             logging.warning(f"Impossible de lire les parametres DB depuis .env: {e}")
 
     def save_settings(self):
-        # 1. جلب إعدادات PDF أولاً (الخطوة الحاسمة لعدم مسح البيانات الجديدة)
+        """Sauvegarder toutes les modifications (globales et PDF)"""
+        # 1. Sauvegarder les paramètres PDF (dans la base de données)
         if hasattr(self, 'tab_pdf_config'):
             try:
-                pdf_updates = self.tab_pdf_config.get_updated_settings()
-                self.settings.update(pdf_updates)
+                self.tab_pdf_config.save_settings()
             except Exception as e:
-                logging.error(f"Erreur avec tab_pdf_config: {e}")
+                logging.error(f"Erreur lors de la sauvegarde des paramètres PDF dans la BD: {e}")
 
         # 2. قراءة الإعدادات من الواجهة وتخزينها (تُكتب أخيراً لتكون لها الأولوية المطلقة)
         self.settings["lab_name"] = self.txt_lab_name.text()
         self.settings["lab_address"] = self.txt_lab_address.text()
+        self.settings["lab_nif"] = self.txt_lab_nif.text()
+        self.settings["lab_rc"] = self.txt_lab_rc.text()
+
         self.settings["expiry_warning_days"] = self.spin_expiry.value()
         self.settings["low_stock_threshold"] = self.spin_stock.value()
-        
+
         self.settings["db_host"] = self.txt_db_host.text()
         self.settings["db_port"] = self.spin_db_port.value()
         self.settings["db_user"] = self.txt_db_user.text()
         self.settings["db_password"] = self.txt_db_pass.text()
         self.settings["db_name"] = self.txt_db_name.text()
-        
+
         self.settings["selected_printer"] = self.combo_printers.currentText()
         self.settings["label_width"] = self.spin_width.value()
         self.settings["label_height"] = self.spin_height.value()
         self.settings["gap"] = self.spin_gap.value()
-        
+
         self.settings["flask_env"] = self.combo_env.currentText()
         self.settings["secret_key"] = self.txt_secret.text()
         self.settings["max_content_length"] = self.spin_max_len.value()
-        
+
         # --- إعدادات الحفظ التلقائي ---
         self.settings["auto_backup_enabled"] = self.chk_auto_backup.isChecked()
         self.settings["auto_backup_interval"] = self.spin_auto_interval.value()
         self.settings["auto_backup_password"] = self.txt_auto_pwd.text()
+        self.settings["auto_backup_max_files"] = self.spin_max_backups.value()
         self.settings["backup_paths"] = [self.list_backup_paths.item(i).text() for i in range(self.list_backup_paths.count())]
-        
+
         # 3. الكتابة المباشرة في ملف config.json
         try:
             logging.info(f"💾 Sauvegarde vers : {CONFIG_FILE}")
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.settings, f, ensure_ascii=False, indent=4)
-                
+
             if hasattr(self.data_manager, 'printer'):
                 self.data_manager.printer.reload_settings()
-                
+
             # إعادة تشغيل مؤقت الحفظ التلقائي في الخلفية بالإعدادات الجديدة
             try:
                 main_window = self.window()
@@ -468,7 +483,7 @@ class SettingsTab(QWidget):
                 f"Dossiers : {len(self.settings['backup_paths'])}"
             )
             QMessageBox.information(self, "Succès", msg)
-            
+
         except Exception as e:
             logging.error(f"❌ Échec de la sauvegarde: {e}")
             QMessageBox.critical(self, "Erreur", f"Échec de l'enregistrement :\n{e}")
@@ -536,7 +551,7 @@ class SettingsTab(QWidget):
             logging.error(error_msg)
             self.set_connection_error(error_msg)
             QMessageBox.critical(self, "Échec", error_msg)
-    
+
     def perform_backup(self):
         filename = f"sauvegarde_excel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         path, _ = QFileDialog.getSaveFileName(self, "Enregistrer la sauvegarde (Excel)", filename, "Fichiers ZIP (*.zip)")
@@ -550,8 +565,8 @@ class SettingsTab(QWidget):
 
     def perform_restore(self):
         confirm = QMessageBox.warning(
-            self, 
-            "Attention - Restauration", 
+            self,
+            "Attention - Restauration",
             "Toutes les données actuelles seront supprimées et remplaçées par celles du fichier de sauvegarde ! \n\nÊtes-vous sûr ?",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -593,8 +608,8 @@ class SettingsTab(QWidget):
                     QMessageBox.critical(self, "Erreur", "La fonction de restauration est introuvable.")
 
     def perform_archive_logs(self):
-        days, ok = QInputDialog.getInt(self, "Archiver les historiques", 
-                                       "Archiver les enregistrements plus anciens que (jours) :", 
+        days, ok = QInputDialog.getInt(self, "Archiver les historiques",
+                                       "Archiver les enregistrements plus anciens que (jours) :",
                                        365, 30, 3650)
         if ok:
             filename = f"logs_archive_{datetime.now().strftime('%Y%m%d')}.zip"
@@ -638,7 +653,7 @@ class SettingsTab(QWidget):
             self.grp_view_mode.setStyleSheet("QGroupBox { border: 1px solid orange; margin-top: 10px; }")
 
     def test_print_label(self):
-        self.save_settings() 
+        self.save_settings()
         if hasattr(self.data_manager, 'printer'):
             success, msg = self.data_manager.printer.print_label(
                 "Réactif Test", "1234567890", "LOT-01", "2025-12-31"

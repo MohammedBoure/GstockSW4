@@ -582,12 +582,12 @@ class BackupManagerMixin:
         except Exception as e:
             logging.error(f"❌ Restore Failed for {table_name}: {e}")
             return False
-        
+
     # -------------------------------------------------------------------------
     # MULTI-PATH BACKUP (AUTO & MANUAL)
     # -------------------------------------------------------------------------
 
-    def create_multi_backup(self, target_paths: list, password: str = "", is_auto: bool = True):
+    def create_multi_backup(self, target_paths: list, password: str = "", is_auto: bool = True, max_auto_backups: int = 5):
         """
         يقوم بتوليد النسخة الاحتياطية ونسخها إلى جميع المسارات المحددة في القائمة.
         إذا كان is_auto=True: يضعها في مجلد Auto_Backups ويحذف النسخ القديمة.
@@ -596,10 +596,10 @@ class BackupManagerMixin:
         import datetime
         import shutil
         import os
-        
+
         if not target_paths:
             return False, "لم يتم تحديد أي مسار للنسخ الاحتياطي."
-            
+
         try:
             import pyzipper
             has_pyzipper = True
@@ -611,7 +611,7 @@ class BackupManagerMixin:
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         prefix = "AutoBackup" if is_auto else "ManualBackup"
         zip_filename = f"{prefix}_{timestamp}.zip"
-        
+
         master_zip_path = os.path.abspath(f'temp_{zip_filename}')
         temp_csv_dir = os.path.abspath('temp_export_csv')
 
@@ -626,12 +626,12 @@ class BackupManagerMixin:
                 for table_name in inspector.get_table_names():
                     try:
                         df = pd.read_sql_query(text(f"SELECT * FROM `{table_name}`"), conn_sa)
-                        
+
                         # معالجة تنسيق التواريخ لمنع الأخطاء عند الاستعادة
                         if not df.empty:
                             for col in df.select_dtypes(include=['datetime64[ns]', 'datetime']).columns:
                                 df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S').replace('NaT', None)
-                                
+
                         df.to_csv(os.path.join(temp_csv_dir, f"{table_name}.csv"), index=False, encoding='utf-8', na_rep='<NULL>')
                     except Exception as e:
                         logging.warning(f"⚠️ Export error {table_name}: {e}")
@@ -639,7 +639,7 @@ class BackupManagerMixin:
             if password:
                 if not has_pyzipper:
                     return False, "فشل التشفير: مكتبة 'pyzipper' غير مثبتة. يرجى تثبيتها (pip install pyzipper)."
-                
+
                 with pyzipper.AESZipFile(master_zip_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zipf:
                     zipf.setpassword(password.encode('utf-8'))
                     for root, _, files in os.walk(temp_csv_dir):
@@ -663,16 +663,23 @@ class BackupManagerMixin:
                     # تحديد المجلد الوجهة
                     dest_dir = os.path.join(base_path, "Auto_Backups") if is_auto else base_path
                     os.makedirs(dest_dir, exist_ok=True)
-                    
+
                     # حذف النسخ التلقائية القديمة في هذا المسار
-                    if is_auto:
+                    if is_auto and max_auto_backups > 0:
+                        existing_backups = []
                         for file_name in os.listdir(dest_dir):
                             if file_name.endswith('.zip') and file_name.startswith('AutoBackup'):
-                                try: 
-                                    os.remove(os.path.join(dest_dir, file_name))
-                                except Exception: 
-                                    pass
-                                
+                                existing_backups.append(os.path.join(dest_dir, file_name))
+
+                        existing_backups.sort(key=os.path.getmtime)
+                        while len(existing_backups) >= max_auto_backups:
+                            oldest_file = existing_backups.pop(0)
+                            try:
+                                os.remove(oldest_file)
+                                logging.info(f"Deleted old backup to respect max limit: {oldest_file}")
+                            except Exception:
+                                pass
+
                     # نسخ الملف إلى الوجهة النهائية
                     final_path = os.path.join(dest_dir, zip_filename)
                     shutil.copy2(master_zip_path, final_path)
