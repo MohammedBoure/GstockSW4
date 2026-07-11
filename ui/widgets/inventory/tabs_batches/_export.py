@@ -41,14 +41,16 @@ EXPORT_COLUMN_KEYS = {
     8: 'Expiry_Date',
     9: 'Quantity_Initial',
     10: 'Internal_Barcode',
-    11: 'Unit_Price_Received',
-    12: 'Total_Value',
-    13: 'Selling_Price_HT',
-    14: 'Selling_Price_HT_2',
-    15: 'Selling_Price_HT_3',
-    16: 'Selling_Price_HT_4',
-    17: 'PO_ID',
-    18: 'Location_Name',
+    11: 'External_Barcode',
+    12: 'Unit_Price_Received',
+    13: 'Total_Value',
+    14: 'Selling_Price_HT',
+    15: 'Selling_Price_HT_2',
+    16: 'Selling_Price_HT_3',
+    17: 'Selling_Price_HT_4',
+    18: 'PO_ID',
+    19: 'Location_Name',
+    20: 'Reception_Note',
 }
 
 
@@ -64,7 +66,7 @@ def _export_column_indices(self):
     is_tech = _is_technician(self)
     return [
         c for c in range(self.table.columnCount())
-        if not (is_tech and c in [11, 12, 13, 14, 15, 16])
+        if not (is_tech and c in [12, 13, 14, 15, 16, 17])
     ]
 
 
@@ -85,15 +87,22 @@ def _format_export_cell(row, column_index):
     if column_index == 10:
         return row.get('Internal_Barcode') or row.get('Barcode') or ''
     if column_index == 11:
-        return format_money(float(row.get('Unit_Price_Received', 0) or 0))
+        return row.get('External_Barcode') or ''
     if column_index == 12:
+        return format_money(float(row.get('Unit_Price_Received', 0) or 0))
+    if column_index == 13:
         qty = float(row.get('Quantity_Current', 0) or 0)
         price = float(row.get('Unit_Price_Received', 0) or 0)
         discount = float(row.get('Discount_Percent', 0) or 0) / 100.0
         tax = float(row.get('Tax_Rate_Percent', 0) or 0) / 100.0
         return format_money(qty * price * (1 - discount) * (1 + tax))
-    if column_index in [13, 14, 15, 16]:
-        keys = {13: 'Selling_Price_HT', 14: 'Selling_Price_HT_2', 15: 'Selling_Price_HT_3', 16: 'Selling_Price_HT_4'}
+    if column_index in [14, 15, 16, 17]:
+        keys = {
+            14: 'Selling_Price_HT',
+            15: 'Selling_Price_HT_2',
+            16: 'Selling_Price_HT_3',
+            17: 'Selling_Price_HT_4',
+        }
         return format_money(float(row.get(keys[column_index], 0) or 0))
 
     key = EXPORT_COLUMN_KEYS.get(column_index)

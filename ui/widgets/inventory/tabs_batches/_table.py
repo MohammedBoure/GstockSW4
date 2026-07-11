@@ -8,7 +8,7 @@ import json
 
 from PySide6.QtWidgets import QTableWidgetItem, QApplication
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QBrush, QColor, QFont
 
 from ui.formatting import format_money, format_quantity
 
@@ -17,12 +17,14 @@ from ui.formatting import format_money, format_quantity
 # مساعد بناء خلية والتحقق من الصلاحيات
 # ---------------------------------------------------------------------------
 
-def _make_item(val, align=Qt.AlignCenter, color=None, font=None):
+def _make_item(val, align=Qt.AlignCenter, color=None, font=None, bg_color=None):
     s_val = str(val) if val is not None else ""
     it = QTableWidgetItem(s_val)
     it.setTextAlignment(align)
     if color:
         it.setForeground(color)
+    if bg_color:
+        it.setBackground(QBrush(QColor(bg_color)))
     if font:
         it.setFont(font)
     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
@@ -104,8 +106,8 @@ def _append_rows(self, chunk):
         self.table.insertRow(r)
         _fill_row(self.table, r, b, hide_fin)
 
-    self.table.setColumnHidden(12, hide_fin)
-    self.table.setColumnHidden(13, hide_fin)
+    for col in range(12, 18):
+        self.table.setColumnHidden(col, hide_fin)
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +140,8 @@ def populate_table(self, data):
         _fill_row(self.table, r, b, hide_fin)
 
     self.table.setSortingEnabled(False)
-    self.table.setColumnHidden(12, hide_fin)
-    self.table.setColumnHidden(13, hide_fin)
+    for col in range(12, 18):
+        self.table.setColumnHidden(col, hide_fin)
 
     if hide_fin:
         self.lbl_total_value.hide()
@@ -151,33 +153,42 @@ def populate_table(self, data):
 def _fill_row(table, r, b, hide_fin):
     """ملء صف واحد بالبيانات"""
     qty = float(b.get('Quantity_Current', 0))
+    raw_reclamation = b.get('Reception_Note')
+    reclamation = str(raw_reclamation).strip() if raw_reclamation is not None else ""
+    if reclamation.lower() == "none":
+        reclamation = ""
+    bg_color = "#ffe4cd" if reclamation else None
 
     prod_item = _make_item(
         b.get('Product_Name', '---'),
-        Qt.AlignLeft | Qt.AlignVCenter
+        Qt.AlignLeft | Qt.AlignVCenter,
+        bg_color=bg_color
     )
     prod_item.setData(Qt.UserRole, b)
     table.setItem(r, 0, prod_item)
 
-    table.setItem(r, 1,  _make_item(b.get('Family_Name', '---')))
-    table.setItem(r, 2,  _make_item(b.get('Manuf_Name', '---')))
-    table.setItem(r, 3,  _make_item(b.get('Automate_Name', '---')))
-    table.setItem(r, 4,  _make_item(b.get('Supplier_Name', '---')))
+    table.setItem(r, 1,  _make_item(b.get('Family_Name', '---'), bg_color=bg_color))
+    table.setItem(r, 2,  _make_item(b.get('Manuf_Name', '---'), bg_color=bg_color))
+    table.setItem(r, 3,  _make_item(b.get('Automate_Name', '---'), bg_color=bg_color))
+    table.setItem(r, 4,  _make_item(b.get('Supplier_Name', '---'), bg_color=bg_color))
     table.setItem(r, 5,  _make_item(
         format_quantity(qty),
         color=QColor("#27ae60"),
-        font=QFont("", -1, QFont.Bold)
+        font=QFont("", -1, QFont.Bold),
+        bg_color=bg_color
     ))
     table.setItem(r, 6,  _make_item(
-        str(b.get('Date_Received') or b.get('Created_At', ''))[:10]
+        str(b.get('Date_Received') or b.get('Created_At', ''))[:10],
+        bg_color=bg_color
     ))
-    table.setItem(r, 7,  _make_item(b.get('Lot_Number', '---')))
-    table.setItem(r, 8,  _make_item(str(b.get('Expiry_Date', ''))[:10]))
-    table.setItem(r, 9,  _make_item(format_quantity(b.get('Quantity_Initial', 0))))
+    table.setItem(r, 7,  _make_item(b.get('Lot_Number', '---'), bg_color=bg_color))
+    table.setItem(r, 8,  _make_item(str(b.get('Expiry_Date', ''))[:10], bg_color=bg_color))
+    table.setItem(r, 9,  _make_item(format_quantity(b.get('Quantity_Initial', 0)), bg_color=bg_color))
     table.setItem(r, 10, _make_item(
-        b.get('Internal_Barcode') or b.get('Barcode')
+        b.get('Internal_Barcode') or b.get('Barcode'),
+        bg_color=bg_color
     ))
-    table.setItem(r, 11, _make_item(b.get('External_Barcode') or '---'))
+    table.setItem(r, 11, _make_item(b.get('External_Barcode') or '---', bg_color=bg_color))
 
     # تطبيق الفلتر المالي على الصف
     if not hide_fin:
@@ -190,22 +201,19 @@ def _fill_row(table, r, b, hide_fin):
         sv3 = float(b.get('Selling_Price_HT_3') or 0)
         sv4 = float(b.get('Selling_Price_HT_4') or 0)
         
-        table.setItem(r, 12, _make_item(format_money(p)))
-        table.setItem(r, 13, _make_item(format_money(lv)))
-        table.setItem(r, 14, _make_item(format_money(sv1)))
-        table.setItem(r, 15, _make_item(format_money(sv2)))
-        table.setItem(r, 16, _make_item(format_money(sv3)))
-        table.setItem(r, 17, _make_item(format_money(sv4)))
+        table.setItem(r, 12, _make_item(format_money(p), bg_color=bg_color))
+        table.setItem(r, 13, _make_item(format_money(lv), bg_color=bg_color))
+        table.setItem(r, 14, _make_item(format_money(sv1), bg_color=bg_color))
+        table.setItem(r, 15, _make_item(format_money(sv2), bg_color=bg_color))
+        table.setItem(r, 16, _make_item(format_money(sv3), bg_color=bg_color))
+        table.setItem(r, 17, _make_item(format_money(sv4), bg_color=bg_color))
     else:
-        table.setItem(r, 12, QTableWidgetItem(''))
-        table.setItem(r, 13, QTableWidgetItem(''))
-        table.setItem(r, 14, QTableWidgetItem(''))
-        table.setItem(r, 15, QTableWidgetItem(''))
-        table.setItem(r, 16, QTableWidgetItem(''))
-        table.setItem(r, 17, QTableWidgetItem(''))
+        for col in range(12, 18):
+            table.setItem(r, col, _make_item('', bg_color=bg_color))
         
-    table.setItem(r, 18, _make_item(str(b.get('PO_ID') or '---')))
-    table.setItem(r, 19, _make_item(b.get('Location_Name', '---')))
+    table.setItem(r, 18, _make_item(str(b.get('PO_ID') or '---'), bg_color=bg_color))
+    table.setItem(r, 19, _make_item(b.get('Location_Name', '---'), bg_color=bg_color))
+    table.setItem(r, 20, _make_item(reclamation, bg_color=bg_color))
 
 # ---------------------------------------------------------------------------
 # الفرز
@@ -217,18 +225,19 @@ COL_MAP = {
     4: 'Supplier_Name',     5: 'Quantity_Current',
     6: 'Date_Received',     7: 'Lot_Number',
     8: 'Expiry_Date',       9: 'Quantity_Initial',
-    10: 'Internal_Barcode', 11: 'Unit_Price_Received',
-    12: 'Total_Value',      13: 'Selling_Price_HT',
-    14: 'Selling_Price_HT_2', 15: 'Selling_Price_HT_3',
-    16: 'Selling_Price_HT_4', 17: 'PO_ID',
-    18: 'Location_Name',
+    10: 'Internal_Barcode', 11: 'External_Barcode',
+    12: 'Unit_Price_Received', 13: 'Total_Value',
+    14: 'Selling_Price_HT', 15: 'Selling_Price_HT_2',
+    16: 'Selling_Price_HT_3', 17: 'Selling_Price_HT_4',
+    18: 'PO_ID',           19: 'Location_Name',
+    20: 'Reception_Note',
 }
 
-NUMERIC_COLS = {5, 9, 11, 13, 14, 15, 16}
+NUMERIC_COLS = {5, 9, 12, 13, 14, 15, 16, 17}
 DATE_COLS    = {6, 8}
 
 def _sort_key(col_index, item):
-    if col_index == 12:
+    if col_index == 13:
         try:
             return (float(item.get('Quantity_Current', 0))
                     * float(item.get('Unit_Price_Received', 0)))
@@ -281,7 +290,7 @@ def apply_sorting(self):
         )
 
         key_name = COL_MAP.get(col)
-        if not key_name and col != 12:
+        if not key_name and col != 13:
             return
 
         self.filtered_data.sort(

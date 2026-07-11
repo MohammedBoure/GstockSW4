@@ -919,7 +919,8 @@ class InventoryBatchManager:
                         B.PO_ID,
                         B.BR_ID,
                         B.Status,
-                        B.Created_At AS Date_Received
+                        B.Created_At AS Date_Received,
+                        B.Reception_Note
                     FROM 
                         Inventory_Batches B
                     INNER JOIN 

@@ -173,6 +173,11 @@ def _build_right_filters(self):
 
     # أزرار الإجراءات
     reset_layout = QHBoxLayout()
+    self.chk_reclamation = QCheckBox("Réclamations Uniquement")
+    self.chk_reclamation.setStyleSheet("font-weight: bold; color: #d35400;")
+    self.chk_reclamation.setChecked(False)
+    self.chk_reclamation.stateChanged.connect(self.apply_filters_local)
+    reset_layout.addWidget(self.chk_reclamation)
     reset_layout.addStretch()
 
     btn_refresh = QPushButton("Actualiser")
@@ -209,7 +214,8 @@ def _build_table(self):
         "Désignation Produit", "Famille", "Marque", "Automate",
         "Fournisseur", "Stock (Actuel)", "Date Entrée", "N° Lot",
         "Date Exp.", "Qté Init.", "Code-Barres", "Code Ext", "Prix U.",
-        "Valeur (DA)", "Prix Vente 1", "Prix Vente 2", "Prix Vente 3", "Prix Vente 4", "Ref PO", "Emplacement"
+        "Valeur (DA)", "Prix Vente 1", "Prix Vente 2", "Prix Vente 3", "Prix Vente 4",
+        "Ref PO", "Emplacement", "Réclamation"
     ]
     self.table.setColumnCount(len(cols))
     self.table.setHorizontalHeaderLabels(cols)
