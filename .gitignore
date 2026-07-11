@@ -44,3 +44,4 @@ pdf_settings.json
 *.db
 *.sqlite
 *.sqlite3
+*.png

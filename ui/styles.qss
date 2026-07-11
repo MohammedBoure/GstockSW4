@@ -638,3 +638,75 @@ QPushButton[class="hide_button"] {
     border-radius: 0px;
     padding: 12px;
 }
+
+/* ============================================================
+   10. SALES TAB (POS & HISTORY)
+   ============================================================ */
+
+/* Frames & Grouping */
+#CartFrame, #SummaryFrame, #FilterFrame, #MainFrame, #DetailFrame {
+    background-color: #ffffff;
+    border-radius: 8px;
+    border: 1px solid #cfd8dc;
+}
+
+/* Custom Search Input in POS */
+QLineEdit#ScanSearchInput {
+    border: 2px solid #b2dfdb;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 15px;
+    font-weight: 600;
+    background-color: #ffffff;
+}
+QLineEdit#ScanSearchInput:focus {
+    border: 2px solid #007572;
+    background-color: #f0f7f7;
+}
+
+/* POS Specific Labels */
+#TotalLabel {
+    font-size: 28px;
+    font-weight: 900;
+    color: #007572;
+    margin-top: 20px;
+    padding: 10px;
+    background-color: #e0f2f1;
+    border-radius: 8px;
+    border: 1px solid #007572;
+}
+
+#SubTotalLabel {
+    font-size: 16px;
+    font-weight: 600;
+    color: #607d8b;
+    padding: 5px 0;
+}
+
+/* POS Table Adjustments */
+QTableWidget#POSCartTable {
+    border: none;
+    background-color: #ffffff;
+    gridline-color: #f1f5f9;
+    selection-background-color: #e0f2f1;
+    selection-color: #2c3e50;
+    font-size: 13px;
+    alternate-background-color: #fafbfc;
+}
+QTableWidget#POSCartTable::item {
+    padding: 10px 9px;
+    border-bottom: 1px solid #f5f5f5;
+}
+
+/* History Specific Labels */
+#ProfitLabel {
+    color: #007572;
+    font-weight: bold;
+}
+
+#TitleLabel {
+    font-size: 16px;
+    font-weight: 800;
+    color: #2c3e50;
+    margin-bottom: 5px;
+}
