@@ -31,12 +31,14 @@ class ReceptionDialogLogicMixin:
         if hasattr(self, 'inp_barcode'):
             self.inp_barcode.returnPressed.connect(self.on_barcode_scanned)
 
-        for w in [self.inp_qty, self.inp_price, self.inp_remise, 
+        for w in [self.inp_qty, self.inp_remise,
                   self.inp_sell_price, self.inp_sell_price_2, 
                   self.inp_sell_price_3, self.inp_sell_price_4]:
             w.valueChanged.connect(self.calculate_live_item_ttc)
         self.cb_remise_type.currentIndexChanged.connect(self.calculate_live_item_ttc)
-        self.chk_tva.stateChanged.connect(self.calculate_live_item_ttc)
+        self.inp_price.valueChanged.connect(self.on_ht_changed)
+        self.inp_price_ttc.valueChanged.connect(self.on_ttc_changed)
+        self.chk_tva.stateChanged.connect(self.on_tva_toggled)
         self.chk_sell_tva.stateChanged.connect(self.calculate_live_item_ttc)
 
         self.btn_validate_ref.clicked.connect(self.validate_header_and_create)
@@ -120,6 +122,28 @@ class ReceptionDialogLogicMixin:
             self.inp_sell_price_3.setValue(float(p.get('Selling_Price_HT_3', 0)))
             self.inp_sell_price_4.setValue(float(p.get('Selling_Price_HT_4', 0)))
             self.chk_sell_tva.setChecked(float(p.get('Selling_TVA_Percent', 0)) > 0)
+
+    def on_ht_changed(self):
+        try:
+            self.inp_price_ttc.blockSignals(True)
+            tva_rate = 0.19 if hasattr(self, 'chk_tva') and self.chk_tva.isChecked() else 0.0
+            self.inp_price_ttc.setValue(self.inp_price.value() * (1 + tva_rate))
+        finally:
+            self.inp_price_ttc.blockSignals(False)
+        self.calculate_live_item_ttc()
+
+    def on_ttc_changed(self):
+        try:
+            self.inp_price.blockSignals(True)
+            tva_rate = 0.19 if hasattr(self, 'chk_tva') and self.chk_tva.isChecked() else 0.0
+            divisor = 1 + tva_rate
+            self.inp_price.setValue(self.inp_price_ttc.value() / divisor if divisor else self.inp_price_ttc.value())
+        finally:
+            self.inp_price.blockSignals(False)
+        self.calculate_live_item_ttc()
+
+    def on_tva_toggled(self):
+        self.on_ht_changed()
 
     def calculate_live_item_ttc(self):
         try:
@@ -749,6 +773,7 @@ class ReceptionDialogLogicMixin:
         self.inp_lot.clear()
         self.inp_qty.setValue(1)
         self.inp_price.setValue(0.0)
+        self.inp_price_ttc.setValue(0.0)
         self.inp_remise.setValue(0.0)
         self.inp_observation.clear()
         self.inp_sell_price.setValue(0.0)

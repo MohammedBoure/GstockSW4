@@ -43,14 +43,15 @@ EXPORT_COLUMN_KEYS = {
     10: 'Internal_Barcode',
     11: 'External_Barcode',
     12: 'Unit_Price_Received',
-    13: 'Total_Value',
-    14: 'Selling_Price_HT',
-    15: 'Selling_Price_HT_2',
-    16: 'Selling_Price_HT_3',
-    17: 'Selling_Price_HT_4',
-    18: 'PO_ID',
-    19: 'Location_Name',
-    20: 'Reception_Note',
+    13: 'Unit_Price_Received_TTC',
+    14: 'Total_Value',
+    15: 'Selling_Price_HT',
+    16: 'Selling_Price_HT_2',
+    17: 'Selling_Price_HT_3',
+    18: 'Selling_Price_HT_4',
+    19: 'PO_ID',
+    20: 'Location_Name',
+    21: 'Reception_Note',
 }
 
 
@@ -66,7 +67,7 @@ def _export_column_indices(self):
     is_tech = _is_technician(self)
     return [
         c for c in range(self.table.columnCount())
-        if not (is_tech and c in [12, 13, 14, 15, 16, 17])
+        if not (is_tech and c in [12, 13, 14, 15, 16, 17, 18])
     ]
 
 
@@ -91,17 +92,22 @@ def _format_export_cell(row, column_index):
     if column_index == 12:
         return format_money(float(row.get('Unit_Price_Received', 0) or 0))
     if column_index == 13:
+        price = float(row.get('Unit_Price_Received', 0) or 0)
+        discount = float(row.get('Discount_Percent', 0) or 0) / 100.0
+        tax = float(row.get('Tax_Rate_Percent', 0) or 0) / 100.0
+        return format_money(price * (1 - discount) * (1 + tax))
+    if column_index == 14:
         qty = float(row.get('Quantity_Current', 0) or 0)
         price = float(row.get('Unit_Price_Received', 0) or 0)
         discount = float(row.get('Discount_Percent', 0) or 0) / 100.0
         tax = float(row.get('Tax_Rate_Percent', 0) or 0) / 100.0
         return format_money(qty * price * (1 - discount) * (1 + tax))
-    if column_index in [14, 15, 16, 17]:
+    if column_index in [15, 16, 17, 18]:
         keys = {
-            14: 'Selling_Price_HT',
-            15: 'Selling_Price_HT_2',
-            16: 'Selling_Price_HT_3',
-            17: 'Selling_Price_HT_4',
+            15: 'Selling_Price_HT',
+            16: 'Selling_Price_HT_2',
+            17: 'Selling_Price_HT_3',
+            18: 'Selling_Price_HT_4',
         }
         return format_money(float(row.get(keys[column_index], 0) or 0))
 
@@ -190,7 +196,7 @@ def export_to_excel(self):
     try:
         if filename.endswith('.xlsx') and HAS_PANDAS:
             df = pd.DataFrame(rows, columns=cols)
-            for col_name in ['Stock (Actuel)', 'Qté Init.', 'Prix U.', 'Valeur (DA)']:
+            for col_name in ['Stock (Actuel)', 'Qté Init.', 'Prix U. HT', 'Prix U. TTC', 'Valeur (DA)']:
                 if col_name in df.columns:
                     df[col_name] = (
                         df[col_name]
@@ -301,7 +307,8 @@ def export_to_pdf(self):
             'Expiration': 45,
             'QtÃ© Init.': 32,
             'Code-Barres': 50,
-            'Prix U.': 35,
+            'Prix U. HT': 35,
+            'Prix U. TTC': 35,
             'Valeur (DA)': 45,
             'PO': 35,
             'Emplacement': 45,

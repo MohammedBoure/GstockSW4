@@ -106,7 +106,7 @@ def _append_rows(self, chunk):
         self.table.insertRow(r)
         _fill_row(self.table, r, b, hide_fin)
 
-    for col in range(12, 18):
+    for col in range(12, 19):
         self.table.setColumnHidden(col, hide_fin)
 
 
@@ -140,7 +140,7 @@ def populate_table(self, data):
         _fill_row(self.table, r, b, hide_fin)
 
     self.table.setSortingEnabled(False)
-    for col in range(12, 18):
+    for col in range(12, 19):
         self.table.setColumnHidden(col, hide_fin)
 
     if hide_fin:
@@ -195,25 +195,27 @@ def _fill_row(table, r, b, hide_fin):
         p  = float(b.get('Unit_Price_Received', 0))
         d  = float(b.get('Discount_Percent', 0)) / 100.0
         t  = float(b.get('Tax_Rate_Percent', 0)) / 100.0
-        lv = qty * p * (1 - d) * (1 + t)
+        p_ttc = p * (1 - d) * (1 + t)
+        lv = qty * p_ttc
         sv1 = float(b.get('Selling_Price_HT') or 0)
         sv2 = float(b.get('Selling_Price_HT_2') or 0)
         sv3 = float(b.get('Selling_Price_HT_3') or 0)
         sv4 = float(b.get('Selling_Price_HT_4') or 0)
         
         table.setItem(r, 12, _make_item(format_money(p), bg_color=bg_color))
-        table.setItem(r, 13, _make_item(format_money(lv), bg_color=bg_color))
-        table.setItem(r, 14, _make_item(format_money(sv1), bg_color=bg_color))
-        table.setItem(r, 15, _make_item(format_money(sv2), bg_color=bg_color))
-        table.setItem(r, 16, _make_item(format_money(sv3), bg_color=bg_color))
-        table.setItem(r, 17, _make_item(format_money(sv4), bg_color=bg_color))
+        table.setItem(r, 13, _make_item(format_money(p_ttc), bg_color=bg_color))
+        table.setItem(r, 14, _make_item(format_money(lv), bg_color=bg_color))
+        table.setItem(r, 15, _make_item(format_money(sv1), bg_color=bg_color))
+        table.setItem(r, 16, _make_item(format_money(sv2), bg_color=bg_color))
+        table.setItem(r, 17, _make_item(format_money(sv3), bg_color=bg_color))
+        table.setItem(r, 18, _make_item(format_money(sv4), bg_color=bg_color))
     else:
-        for col in range(12, 18):
+        for col in range(12, 19):
             table.setItem(r, col, _make_item('', bg_color=bg_color))
         
-    table.setItem(r, 18, _make_item(str(b.get('PO_ID') or '---'), bg_color=bg_color))
-    table.setItem(r, 19, _make_item(b.get('Location_Name', '---'), bg_color=bg_color))
-    table.setItem(r, 20, _make_item(reclamation, bg_color=bg_color))
+    table.setItem(r, 19, _make_item(str(b.get('PO_ID') or '---'), bg_color=bg_color))
+    table.setItem(r, 20, _make_item(b.get('Location_Name', '---'), bg_color=bg_color))
+    table.setItem(r, 21, _make_item(reclamation, bg_color=bg_color))
 
 # ---------------------------------------------------------------------------
 # الفرز
@@ -226,21 +228,32 @@ COL_MAP = {
     6: 'Date_Received',     7: 'Lot_Number',
     8: 'Expiry_Date',       9: 'Quantity_Initial',
     10: 'Internal_Barcode', 11: 'External_Barcode',
-    12: 'Unit_Price_Received', 13: 'Total_Value',
-    14: 'Selling_Price_HT', 15: 'Selling_Price_HT_2',
-    16: 'Selling_Price_HT_3', 17: 'Selling_Price_HT_4',
-    18: 'PO_ID',           19: 'Location_Name',
-    20: 'Reception_Note',
+    12: 'Unit_Price_Received', 13: 'Unit_Price_Received_TTC',
+    14: 'Total_Value', 15: 'Selling_Price_HT',
+    16: 'Selling_Price_HT_2', 17: 'Selling_Price_HT_3',
+    18: 'Selling_Price_HT_4', 19: 'PO_ID',
+    20: 'Location_Name', 21: 'Reception_Note',
 }
 
-NUMERIC_COLS = {5, 9, 12, 13, 14, 15, 16, 17}
+NUMERIC_COLS = {5, 9, 12, 13, 14, 15, 16, 17, 18}
 DATE_COLS    = {6, 8}
 
 def _sort_key(col_index, item):
+    if col_index == 14:
+        try:
+            qty = float(item.get('Quantity_Current', 0))
+            price = float(item.get('Unit_Price_Received', 0))
+            discount = float(item.get('Discount_Percent', 0)) / 100.0
+            tax = float(item.get('Tax_Rate_Percent', 0)) / 100.0
+            return qty * price * (1 - discount) * (1 + tax)
+        except Exception:
+            return 0.0
     if col_index == 13:
         try:
-            return (float(item.get('Quantity_Current', 0))
-                    * float(item.get('Unit_Price_Received', 0)))
+            price = float(item.get('Unit_Price_Received', 0))
+            discount = float(item.get('Discount_Percent', 0)) / 100.0
+            tax = float(item.get('Tax_Rate_Percent', 0)) / 100.0
+            return price * (1 - discount) * (1 + tax)
         except Exception:
             return 0.0
 
@@ -290,7 +303,7 @@ def apply_sorting(self):
         )
 
         key_name = COL_MAP.get(col)
-        if not key_name and col != 13:
+        if not key_name and col not in (13, 14):
             return
 
         self.filtered_data.sort(
