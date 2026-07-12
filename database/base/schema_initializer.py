@@ -81,7 +81,13 @@ _ALL_PERMISSIONS = [
     "act_inventory_export",
     "act_create_sale",
     "act_validate_sale",
-    "act_return_sale"
+    "act_return_sale",
+    "act_pos_open_session",
+    "act_pos_close_session",
+    "act_sale_without_client",
+    "act_cancel_sale",
+    "act_edit_sale",
+    "act_edit_closed_cash_session"
 ]
 # =============================================================================
 # 2. SCHEMA QUERIES (With Inline Alters)
@@ -493,8 +499,39 @@ SCHEMA_QUERIES = [
         Deleted_At DATETIME NULL
     );""",
 
+    """CREATE TABLE IF NOT EXISTS POS_Terminals (
+        Terminal_ID INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        Terminal_Code VARCHAR(100) NOT NULL UNIQUE,
+        Terminal_Name VARCHAR(150) NOT NULL,
+        Is_Active BOOLEAN DEFAULT TRUE,
+        Created_At DATETIME DEFAULT CURRENT_TIMESTAMP
+    );""",
+
+    """CREATE TABLE IF NOT EXISTS POS_Cash_Sessions (
+        Cash_Session_ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        Session_No VARCHAR(100) NOT NULL UNIQUE,
+        Terminal_ID INT UNSIGNED NOT NULL,
+        Opened_By INT UNSIGNED NULL,
+        Closed_By INT UNSIGNED NULL,
+        Status ENUM('Open', 'Closed', 'Cancelled') NOT NULL DEFAULT 'Open',
+        Opening_Amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+        Expected_Cash DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+        Expected_Card DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+        Expected_Transfer DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+        Counted_Cash DECIMAL(15, 2) NULL,
+        Cash_Difference DECIMAL(15, 2) NULL,
+        Notes TEXT NULL,
+        Opened_At DATETIME DEFAULT CURRENT_TIMESTAMP,
+        Closed_At DATETIME NULL,
+        Next_Invoice_Seq INT UNSIGNED NOT NULL DEFAULT 1,
+        FOREIGN KEY (Terminal_ID) REFERENCES POS_Terminals(Terminal_ID) ON UPDATE CASCADE,
+        FOREIGN KEY (Opened_By) REFERENCES Users(User_ID) ON DELETE SET NULL,
+        FOREIGN KEY (Closed_By) REFERENCES Users(User_ID) ON DELETE SET NULL
+    );""",
+
     """CREATE TABLE IF NOT EXISTS Sales_Invoices (
         Invoice_ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        Invoice_No VARCHAR(100) NULL,
         Client_ID INT UNSIGNED NULL,
         Invoice_Date DATE NOT NULL,
         Status ENUM('Draft', 'Validated', 'Paid', 'Cancelled') DEFAULT 'Draft',
@@ -504,13 +541,26 @@ SCHEMA_QUERIES = [
         Total_Amount_TTC DECIMAL(15, 2) DEFAULT 0.00,
         Notes TEXT NULL,
         Created_By INT UNSIGNED,
+        Terminal_ID INT UNSIGNED NULL,
+        Cash_Session_ID BIGINT UNSIGNED NULL,
+        Sale_UUID VARCHAR(64) NULL,
+        Payment_Method ENUM('Cash', 'Card', 'Transfer', 'Versement', 'Other') DEFAULT 'Cash',
         Created_At DATETIME DEFAULT CURRENT_TIMESTAMP,
         Updated_At DATETIME NULL,
         FOREIGN KEY (Client_ID) REFERENCES Clients(Client_ID) ON UPDATE CASCADE,
-        FOREIGN KEY (Created_By) REFERENCES Users(User_ID) ON DELETE SET NULL
+        FOREIGN KEY (Created_By) REFERENCES Users(User_ID) ON DELETE SET NULL,
+        FOREIGN KEY (Terminal_ID) REFERENCES POS_Terminals(Terminal_ID) ON DELETE SET NULL,
+        FOREIGN KEY (Cash_Session_ID) REFERENCES POS_Cash_Sessions(Cash_Session_ID) ON DELETE SET NULL
     );""",
 
     """ALTER TABLE Sales_Invoices MODIFY COLUMN Client_ID INT UNSIGNED NULL;""",
+    """ALTER TABLE Sales_Invoices ADD COLUMN Invoice_No VARCHAR(100) NULL;""",
+    """ALTER TABLE Sales_Invoices ADD COLUMN Terminal_ID INT UNSIGNED NULL;""",
+    """ALTER TABLE Sales_Invoices ADD COLUMN Cash_Session_ID BIGINT UNSIGNED NULL;""",
+    """ALTER TABLE Sales_Invoices ADD COLUMN Sale_UUID VARCHAR(64) NULL;""",
+    """ALTER TABLE Sales_Invoices ADD COLUMN Payment_Method ENUM('Cash', 'Card', 'Transfer', 'Versement', 'Other') DEFAULT 'Cash';""",
+    """ALTER TABLE Sales_Invoices ADD CONSTRAINT fk_sales_terminal FOREIGN KEY (Terminal_ID) REFERENCES POS_Terminals(Terminal_ID) ON DELETE SET NULL;""",
+    """ALTER TABLE Sales_Invoices ADD CONSTRAINT fk_sales_cash_session FOREIGN KEY (Cash_Session_ID) REFERENCES POS_Cash_Sessions(Cash_Session_ID) ON DELETE SET NULL;""",
 
     """CREATE TABLE IF NOT EXISTS Sales_Details (
         Detail_ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -689,9 +739,14 @@ INDEX_QUERIES = [
     "CREATE INDEX idx_partner_name ON External_Partners(Partner_Name);",
     "CREATE INDEX idx_transfer_date ON External_Transfer_Log(Transaction_Date);",
     "CREATE INDEX idx_transfer_partner ON External_Transfer_Log(Partner_ID);",
+    "CREATE UNIQUE INDEX uq_sales_invoice_no ON Sales_Invoices(Invoice_No);",
+    "CREATE UNIQUE INDEX uq_sales_sale_uuid ON Sales_Invoices(Sale_UUID);",
     "CREATE INDEX idx_sales_client ON Sales_Invoices(Client_ID);",
     "CREATE INDEX idx_sales_date ON Sales_Invoices(Invoice_Date);",
+    "CREATE INDEX idx_sales_terminal ON Sales_Invoices(Terminal_ID);",
+    "CREATE INDEX idx_sales_cash_session ON Sales_Invoices(Cash_Session_ID);",
     "CREATE INDEX idx_sales_details_invoice ON Sales_Details(Invoice_ID);",
+    "CREATE INDEX idx_pos_cash_terminal_status ON POS_Cash_Sessions(Terminal_ID, Status);",
     "CREATE INDEX idx_client_payments_client ON Client_Payments(Client_ID);",
     "CREATE INDEX idx_client_credit_client ON Client_Credit_Notes(Client_ID);"
 ]

@@ -2,8 +2,11 @@
 
 import mysql.connector
 import logging
+import uuid
 from datetime import datetime
-from .system_logger import log_methods 
+from decimal import Decimal
+from .system_logger import active_user_id, log_methods
+from .stock_movement_log_manager import StockMovementLogManager
 
 @log_methods()
 class SalesManager:
@@ -11,6 +14,67 @@ class SalesManager:
 
     def __init__(self, db_instance):
         self.db = db_instance
+        self.stock_movement_log = StockMovementLogManager(db_instance)
+        self._ensure_sales_pos_schema()
+
+    def _ensure_sales_pos_schema(self):
+        queries = [
+            """
+            CREATE TABLE IF NOT EXISTS POS_Terminals (
+                Terminal_ID INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                Terminal_Code VARCHAR(100) NOT NULL UNIQUE,
+                Terminal_Name VARCHAR(150) NOT NULL,
+                Is_Active BOOLEAN DEFAULT TRUE,
+                Created_At DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS POS_Cash_Sessions (
+                Cash_Session_ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                Session_No VARCHAR(100) NOT NULL UNIQUE,
+                Terminal_ID INT UNSIGNED NOT NULL,
+                Opened_By INT UNSIGNED NULL,
+                Closed_By INT UNSIGNED NULL,
+                Status ENUM('Open', 'Closed', 'Cancelled') NOT NULL DEFAULT 'Open',
+                Opening_Amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                Expected_Cash DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                Expected_Card DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                Expected_Transfer DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                Counted_Cash DECIMAL(15, 2) NULL,
+                Cash_Difference DECIMAL(15, 2) NULL,
+                Notes TEXT NULL,
+                Opened_At DATETIME DEFAULT CURRENT_TIMESTAMP,
+                Closed_At DATETIME NULL,
+                Next_Invoice_Seq INT UNSIGNED NOT NULL DEFAULT 1,
+                FOREIGN KEY (Terminal_ID) REFERENCES POS_Terminals(Terminal_ID) ON UPDATE CASCADE,
+                FOREIGN KEY (Opened_By) REFERENCES Users(User_ID) ON DELETE SET NULL,
+                FOREIGN KEY (Closed_By) REFERENCES Users(User_ID) ON DELETE SET NULL
+            )
+            """,
+            "ALTER TABLE Sales_Invoices ADD COLUMN Invoice_No VARCHAR(100) NULL;",
+            "ALTER TABLE Sales_Invoices ADD COLUMN Terminal_ID INT UNSIGNED NULL;",
+            "ALTER TABLE Sales_Invoices ADD COLUMN Cash_Session_ID BIGINT UNSIGNED NULL;",
+            "ALTER TABLE Sales_Invoices ADD COLUMN Sale_UUID VARCHAR(64) NULL;",
+            "ALTER TABLE Sales_Invoices ADD COLUMN Payment_Method ENUM('Cash', 'Card', 'Transfer', 'Versement', 'Other') DEFAULT 'Cash';",
+            "CREATE UNIQUE INDEX uq_sales_invoice_no ON Sales_Invoices(Invoice_No);",
+            "CREATE UNIQUE INDEX uq_sales_sale_uuid ON Sales_Invoices(Sale_UUID);",
+            "CREATE INDEX idx_sales_terminal ON Sales_Invoices(Terminal_ID);",
+            "CREATE INDEX idx_sales_cash_session ON Sales_Invoices(Cash_Session_ID);",
+            "ALTER TABLE Sales_Invoices ADD CONSTRAINT fk_sales_terminal FOREIGN KEY (Terminal_ID) REFERENCES POS_Terminals(Terminal_ID) ON DELETE SET NULL;",
+            "ALTER TABLE Sales_Invoices ADD CONSTRAINT fk_sales_cash_session FOREIGN KEY (Cash_Session_ID) REFERENCES POS_Cash_Sessions(Cash_Session_ID) ON DELETE SET NULL;",
+        ]
+        try:
+            with self.db.get_db_connection() as conn:
+                cursor = conn.cursor()
+                for query in queries:
+                    try:
+                        cursor.execute(query)
+                    except mysql.connector.Error as err:
+                        if err.errno in (1060, 1061, 1826):
+                            continue
+                        logging.warning(f"Sales POS schema warning: {err}")
+        except Exception as e:
+            logging.error(f"Sales POS schema check failed: {e}", exc_info=True)
 
     def create_invoice(self, client_id, invoice_date, status='Draft', notes=None, user_id=None):
         """
@@ -32,6 +96,223 @@ class SalesManager:
         except mysql.connector.Error as err:
             logging.error(f"Database error while creating sales invoice: {err}")
             return None
+
+    def create_validated_sale(
+        self, client_id, invoice_date, cart_items, terminal_id, cash_session_id,
+        payment_method='Cash', user_id=None, request_id=None, notes=None
+    ):
+        """
+        Create a validated sale atomically: invoice, details, stock deduction and
+        stock movement logs are committed together. Returns (success, payload).
+        """
+        request_id = request_id or str(uuid.uuid4())
+        valid_payment_methods = {'Cash', 'Card', 'Transfer', 'Versement', 'Other'}
+        if payment_method not in valid_payment_methods:
+            payment_method = 'Cash'
+        if not terminal_id or not cash_session_id:
+            return False, {"message": "Aucune caisse ouverte pour cette vente."}
+        if not cart_items:
+            return False, {"message": "Le panier est vide."}
+
+        normalized_items = []
+        batch_totals = {}
+        try:
+            for raw in cart_items:
+                batch_id = int(raw['batch_id'])
+                qty = Decimal(str(raw['qty_sold']))
+                if qty <= 0:
+                    return False, {"message": "Quantite invalide dans le panier."}
+                item = {
+                    "product_id": int(raw['product_id']),
+                    "batch_id": batch_id,
+                    "qty_sold": qty,
+                    "unit_price_ht": Decimal(str(raw.get('unit_price_ht') or 0)),
+                    "discount_percent": Decimal(str(raw.get('discount_percent') or 0)),
+                    "tva_percent": Decimal(str(raw.get('tva_percent') or 0)),
+                }
+                normalized_items.append(item)
+                batch_totals[batch_id] = batch_totals.get(batch_id, Decimal('0')) + qty
+        except (KeyError, ValueError, TypeError) as e:
+            return False, {"message": f"Panier invalide: {e}"}
+
+        conn = None
+        try:
+            conn = self.db.get_raw_connection()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute(
+                """
+                SELECT Invoice_ID, Invoice_No
+                FROM Sales_Invoices
+                WHERE Sale_UUID = %s
+                LIMIT 1
+                """,
+                (request_id,),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                conn.commit()
+                return True, {
+                    "invoice_id": existing['Invoice_ID'],
+                    "invoice_no": existing.get('Invoice_No') or f"#{existing['Invoice_ID']}",
+                    "duplicate": True,
+                }
+
+            cursor.execute(
+                """
+                SELECT s.*, t.Terminal_Code
+                FROM POS_Cash_Sessions s
+                JOIN POS_Terminals t ON s.Terminal_ID = t.Terminal_ID
+                WHERE s.Cash_Session_ID = %s
+                  AND s.Terminal_ID = %s
+                  AND s.Status = 'Open'
+                FOR UPDATE
+                """,
+                (cash_session_id, terminal_id),
+            )
+            session = cursor.fetchone()
+            if not session:
+                conn.rollback()
+                return False, {"message": "La session de caisse est fermee ou introuvable."}
+
+            locked_batches = {}
+            for batch_id in sorted(batch_totals):
+                cursor.execute(
+                    """
+                    SELECT b.Batch_ID, b.Product_ID, b.Quantity_Current, b.Status, p.Stock_Unit
+                    FROM Inventory_Batches b
+                    JOIN Products_Master p ON b.Product_ID = p.Product_ID
+                    WHERE b.Batch_ID = %s
+                    FOR UPDATE
+                    """,
+                    (batch_id,),
+                )
+                batch = cursor.fetchone()
+                needed = batch_totals[batch_id]
+                if not batch:
+                    conn.rollback()
+                    return False, {"message": f"Lot introuvable: {batch_id}"}
+                available = Decimal(str(batch.get('Quantity_Current') or 0))
+                if available < needed:
+                    conn.rollback()
+                    return False, {
+                        "message": f"Stock insuffisant pour le lot {batch_id}. Disponible: {available}, demande: {needed}"
+                    }
+                locked_batches[batch_id] = batch
+
+            seq = int(session.get('Next_Invoice_Seq') or 1)
+            date_part = str(invoice_date).replace("-", "")[:8] or datetime.now().strftime("%Y%m%d")
+            invoice_no = f"POS{int(terminal_id):02d}-{date_part}-{seq:05d}"
+            cursor.execute(
+                """
+                UPDATE POS_Cash_Sessions
+                SET Next_Invoice_Seq = Next_Invoice_Seq + 1
+                WHERE Cash_Session_ID = %s
+                """,
+                (cash_session_id,),
+            )
+
+            cursor.execute(
+                """
+                INSERT INTO Sales_Invoices
+                (Invoice_No, Client_ID, Invoice_Date, Status, Notes, Created_By,
+                 Terminal_ID, Cash_Session_ID, Sale_UUID, Payment_Method)
+                VALUES (%s, %s, %s, 'Validated', %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    invoice_no, client_id, invoice_date, notes, user_id,
+                    terminal_id, cash_session_id, request_id, payment_method,
+                ),
+            )
+            invoice_id = cursor.lastrowid
+
+            for item in normalized_items:
+                line_total_ht = item['qty_sold'] * item['unit_price_ht'] * (
+                    Decimal('1') - (item['discount_percent'] / Decimal('100'))
+                )
+                line_total_ttc = line_total_ht * (Decimal('1') + (item['tva_percent'] / Decimal('100')))
+                cursor.execute(
+                    """
+                    INSERT INTO Sales_Details
+                    (Invoice_ID, Product_ID, Batch_ID, Qty_Sold, Unit_Price_HT,
+                     Discount_Percent, TVA_Percent, Line_Total_HT, Line_Total_TTC)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        invoice_id, item['product_id'], item['batch_id'], item['qty_sold'],
+                        item['unit_price_ht'], item['discount_percent'], item['tva_percent'],
+                        line_total_ht, line_total_ttc,
+                    ),
+                )
+
+            for batch_id, qty_needed in batch_totals.items():
+                batch = locked_batches[batch_id]
+                new_qty = Decimal(str(batch.get('Quantity_Current') or 0)) - qty_needed
+                cursor.execute(
+                    """
+                    UPDATE Inventory_Batches
+                    SET Quantity_Current = %s,
+                        Status = CASE
+                            WHEN %s <= 0 THEN 'Depleted'
+                            WHEN Status = 'Depleted' AND %s > 0 THEN 'Available'
+                            ELSE Status
+                        END
+                    WHERE Batch_ID = %s
+                    """,
+                    (new_qty, new_qty, new_qty, batch_id),
+                )
+                movement_id = self.stock_movement_log.create_movement_log(
+                    product_id=batch['Product_ID'],
+                    movement_type='Sale',
+                    qty_change=-qty_needed,
+                    unit_used=batch.get('Stock_Unit') or 'Unit',
+                    batch_id=batch_id,
+                    user_id=user_id,
+                    notes=f"Vente {invoice_no}",
+                    external_cursor=cursor,
+                )
+                if not movement_id:
+                    conn.rollback()
+                    return False, {"message": "Echec de journalisation du mouvement de stock."}
+
+            self._update_invoice_totals(cursor, invoice_id)
+            conn.commit()
+            return True, {
+                "invoice_id": invoice_id,
+                "invoice_no": invoice_no,
+                "request_id": request_id,
+            }
+        except mysql.connector.Error as err:
+            if conn:
+                conn.rollback()
+            if getattr(err, 'errno', None) == 1062:
+                try:
+                    with self.db.get_db_connection() as lookup_conn:
+                        lookup = lookup_conn.cursor(dictionary=True)
+                        lookup.execute(
+                            "SELECT Invoice_ID, Invoice_No FROM Sales_Invoices WHERE Sale_UUID = %s",
+                            (request_id,),
+                        )
+                        existing = lookup.fetchone()
+                        if existing:
+                            return True, {
+                                "invoice_id": existing['Invoice_ID'],
+                                "invoice_no": existing.get('Invoice_No') or f"#{existing['Invoice_ID']}",
+                                "duplicate": True,
+                            }
+                except Exception:
+                    pass
+            logging.error(f"Atomic sale error: {err}", exc_info=True)
+            return False, {"message": str(err)}
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logging.error(f"Atomic sale error: {e}", exc_info=True)
+            return False, {"message": str(e)}
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
 
     def add_invoice_detail(self, invoice_id, product_id, batch_id, qty_sold, unit_price_ht, discount_percent=0.00, tva_percent=0.00):
         """
@@ -61,7 +342,296 @@ class SalesManager:
             logging.error(f"Database error while adding invoice detail: {err}")
             return None
 
+    def _invoice_allows_edit(self, cursor, invoice_id, allow_closed_session_override=False):
+        cursor.execute(
+            """
+            SELECT i.Invoice_ID, i.Status, i.Cash_Session_ID, s.Status AS Cash_Session_Status
+            FROM Sales_Invoices i
+            LEFT JOIN POS_Cash_Sessions s ON i.Cash_Session_ID = s.Cash_Session_ID
+            WHERE i.Invoice_ID = %s
+            FOR UPDATE
+            """,
+            (invoice_id,),
+        )
+        invoice = cursor.fetchone()
+        if not invoice:
+            return False, "Facture introuvable.", None
+        if invoice.get('Status') == 'Cancelled':
+            return False, "Facture deja annulee.", invoice
+        if invoice.get('Cash_Session_ID') and invoice.get('Cash_Session_Status') != 'Open' and not allow_closed_session_override:
+            return False, "La session de caisse est fermee. Modification refusee.", invoice
+        return True, "", invoice
+
+    def cancel_invoice_atomic(self, invoice_id, user_id=None, reason=None, allow_closed_session_override=False):
+        conn = None
+        try:
+            conn = self.db.get_raw_connection()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+            allowed, msg, invoice = self._invoice_allows_edit(cursor, invoice_id, allow_closed_session_override)
+            if not allowed:
+                conn.rollback()
+                return False
+
+            cursor.execute(
+                "SELECT Detail_ID, Product_ID, Batch_ID, Qty_Sold FROM Sales_Details WHERE Invoice_ID = %s",
+                (invoice_id,),
+            )
+            details = cursor.fetchall()
+            for detail in sorted(details, key=lambda d: int(d['Batch_ID'])):
+                qty = Decimal(str(detail.get('Qty_Sold') or 0))
+                if qty <= 0:
+                    continue
+                cursor.execute(
+                    """
+                    SELECT b.Batch_ID, b.Product_ID, b.Quantity_Current, p.Stock_Unit
+                    FROM Inventory_Batches b
+                    JOIN Products_Master p ON b.Product_ID = p.Product_ID
+                    WHERE b.Batch_ID = %s
+                    FOR UPDATE
+                    """,
+                    (detail['Batch_ID'],),
+                )
+                batch = cursor.fetchone()
+                if not batch:
+                    conn.rollback()
+                    return False
+                new_qty = Decimal(str(batch.get('Quantity_Current') or 0)) + qty
+                cursor.execute(
+                    """
+                    UPDATE Inventory_Batches
+                    SET Quantity_Current = %s,
+                        Status = CASE WHEN %s > 0 AND Status = 'Depleted' THEN 'Available' ELSE Status END
+                    WHERE Batch_ID = %s
+                    """,
+                    (new_qty, new_qty, detail['Batch_ID']),
+                )
+                movement_id = self.stock_movement_log.create_movement_log(
+                    product_id=detail['Product_ID'],
+                    movement_type='Sale_Return',
+                    qty_change=qty,
+                    unit_used=batch.get('Stock_Unit') or 'Unit',
+                    batch_id=detail['Batch_ID'],
+                    user_id=user_id,
+                    notes=reason or f"Annulation vente #{invoice_id}",
+                    external_cursor=cursor,
+                )
+                if not movement_id:
+                    conn.rollback()
+                    return False
+
+            cursor.execute(
+                """
+                UPDATE Sales_Invoices
+                SET Status = 'Cancelled',
+                    Total_Amount_HT = 0,
+                    Total_Amount_TTC = 0,
+                    Total_Discount = 0,
+                    Total_TVA = 0,
+                    Updated_At = NOW()
+                WHERE Invoice_ID = %s
+                """,
+                (invoice_id,),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logging.error(f"Atomic cancel invoice error: {e}", exc_info=True)
+            return False
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def update_invoice_detail_qty_atomic(self, detail_id, new_qty, user_id=None, allow_closed_session_override=False):
+        conn = None
+        try:
+            new_qty = Decimal(str(new_qty))
+            if new_qty <= 0:
+                return self.remove_invoice_detail_atomic(detail_id, user_id, allow_closed_session_override)
+
+            conn = self.db.get_raw_connection()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT Invoice_ID FROM Sales_Details WHERE Detail_ID = %s",
+                (detail_id,),
+            )
+            detail_ref = cursor.fetchone()
+            if not detail_ref:
+                conn.rollback()
+                return False
+
+            allowed, msg, invoice = self._invoice_allows_edit(cursor, detail_ref['Invoice_ID'], allow_closed_session_override)
+            if not allowed:
+                conn.rollback()
+                return False
+            cursor.execute(
+                "SELECT * FROM Sales_Details WHERE Detail_ID = %s FOR UPDATE",
+                (detail_id,),
+            )
+            detail = cursor.fetchone()
+            if not detail:
+                conn.rollback()
+                return False
+
+            old_qty = Decimal(str(detail.get('Qty_Sold') or 0))
+            diff = new_qty - old_qty
+            cursor.execute(
+                """
+                SELECT b.Batch_ID, b.Product_ID, b.Quantity_Current, p.Stock_Unit
+                FROM Inventory_Batches b
+                JOIN Products_Master p ON b.Product_ID = p.Product_ID
+                WHERE b.Batch_ID = %s
+                FOR UPDATE
+                """,
+                (detail['Batch_ID'],),
+            )
+            batch = cursor.fetchone()
+            if not batch:
+                conn.rollback()
+                return False
+            current_qty = Decimal(str(batch.get('Quantity_Current') or 0))
+            if diff > 0 and current_qty < diff:
+                conn.rollback()
+                return False
+
+            new_stock = current_qty - diff
+            cursor.execute(
+                """
+                UPDATE Inventory_Batches
+                SET Quantity_Current = %s,
+                    Status = CASE
+                        WHEN %s <= 0 THEN 'Depleted'
+                        WHEN Status = 'Depleted' AND %s > 0 THEN 'Available'
+                        ELSE Status
+                    END
+                WHERE Batch_ID = %s
+                """,
+                (new_stock, new_stock, new_stock, detail['Batch_ID']),
+            )
+            if diff != 0:
+                movement_type = 'Sale' if diff > 0 else 'Sale_Return'
+                movement_id = self.stock_movement_log.create_movement_log(
+                    product_id=detail['Product_ID'],
+                    movement_type=movement_type,
+                    qty_change=-diff,
+                    unit_used=batch.get('Stock_Unit') or 'Unit',
+                    batch_id=detail['Batch_ID'],
+                    user_id=user_id,
+                    notes=f"Modification quantite facture #{detail['Invoice_ID']}",
+                    external_cursor=cursor,
+                )
+                if not movement_id:
+                    conn.rollback()
+                    return False
+
+            unit_price = Decimal(str(detail.get('Unit_Price_HT') or 0))
+            discount = Decimal(str(detail.get('Discount_Percent') or 0))
+            tva = Decimal(str(detail.get('TVA_Percent') or 0))
+            line_total_ht = new_qty * unit_price * (Decimal('1') - discount / Decimal('100'))
+            line_total_ttc = line_total_ht * (Decimal('1') + tva / Decimal('100'))
+            cursor.execute(
+                """
+                UPDATE Sales_Details
+                SET Qty_Sold = %s, Line_Total_HT = %s, Line_Total_TTC = %s
+                WHERE Detail_ID = %s
+                """,
+                (new_qty, line_total_ht, line_total_ttc, detail_id),
+            )
+            self._update_invoice_totals(cursor, detail['Invoice_ID'])
+            conn.commit()
+            return True
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logging.error(f"Atomic update invoice detail error: {e}", exc_info=True)
+            return False
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def remove_invoice_detail_atomic(self, detail_id, user_id=None, allow_closed_session_override=False):
+        conn = None
+        try:
+            conn = self.db.get_raw_connection()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT Invoice_ID FROM Sales_Details WHERE Detail_ID = %s",
+                (detail_id,),
+            )
+            detail_ref = cursor.fetchone()
+            if not detail_ref:
+                conn.rollback()
+                return False
+            allowed, msg, invoice = self._invoice_allows_edit(cursor, detail_ref['Invoice_ID'], allow_closed_session_override)
+            if not allowed:
+                conn.rollback()
+                return False
+            cursor.execute(
+                "SELECT * FROM Sales_Details WHERE Detail_ID = %s FOR UPDATE",
+                (detail_id,),
+            )
+            detail = cursor.fetchone()
+            if not detail:
+                conn.rollback()
+                return False
+
+            qty = Decimal(str(detail.get('Qty_Sold') or 0))
+            cursor.execute(
+                """
+                SELECT b.Batch_ID, b.Product_ID, b.Quantity_Current, p.Stock_Unit
+                FROM Inventory_Batches b
+                JOIN Products_Master p ON b.Product_ID = p.Product_ID
+                WHERE b.Batch_ID = %s
+                FOR UPDATE
+                """,
+                (detail['Batch_ID'],),
+            )
+            batch = cursor.fetchone()
+            if not batch:
+                conn.rollback()
+                return False
+            new_stock = Decimal(str(batch.get('Quantity_Current') or 0)) + qty
+            cursor.execute(
+                """
+                UPDATE Inventory_Batches
+                SET Quantity_Current = %s,
+                    Status = CASE WHEN %s > 0 AND Status = 'Depleted' THEN 'Available' ELSE Status END
+                WHERE Batch_ID = %s
+                """,
+                (new_stock, new_stock, detail['Batch_ID']),
+            )
+            movement_id = self.stock_movement_log.create_movement_log(
+                product_id=detail['Product_ID'],
+                movement_type='Sale_Return',
+                qty_change=qty,
+                unit_used=batch.get('Stock_Unit') or 'Unit',
+                batch_id=detail['Batch_ID'],
+                user_id=user_id,
+                notes=f"Suppression ligne facture #{detail['Invoice_ID']}",
+                external_cursor=cursor,
+            )
+            if not movement_id:
+                conn.rollback()
+                return False
+            cursor.execute("DELETE FROM Sales_Details WHERE Detail_ID = %s", (detail_id,))
+            self._update_invoice_totals(cursor, detail['Invoice_ID'])
+            conn.commit()
+            return True
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logging.error(f"Atomic remove invoice detail error: {e}", exc_info=True)
+            return False
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
     def remove_invoice_detail(self, detail_id, batch_manager=None, user_id=None):
+        return self.remove_invoice_detail_atomic(detail_id, user_id=user_id or active_user_id.get())
         """
         حذف تفصيلة من الفاتورة واسترجاع المخزون (إلغاء جزئي).
         """
@@ -101,6 +671,7 @@ class SalesManager:
             return False
 
     def cancel_invoice(self, invoice_id, batch_manager=None, user_id=None):
+        return self.cancel_invoice_atomic(invoice_id, user_id=user_id or active_user_id.get())
         """
         إلغاء فاتورة بالكامل وإرجاع المخزون.
         """
@@ -139,6 +710,7 @@ class SalesManager:
             return False
 
     def update_invoice_detail_qty(self, detail_id, new_qty, batch_manager=None, user_id=None):
+        return self.update_invoice_detail_qty_atomic(detail_id, new_qty, user_id=user_id or active_user_id.get())
         """
         تعديل الكمية المباعة لعنصر محدد. إذا زادت الكمية، نسحب من المخزون. وإذا نقصت، نرجع للمخزون.
         """
@@ -319,12 +891,15 @@ class SalesManager:
                 
                 query = """
                     SELECT 
-                        i.Invoice_ID, i.Invoice_Date, i.Status, i.Total_Amount_HT, i.Total_Amount_TTC,
-                        i.Total_Discount, i.Total_TVA,
+                        i.Invoice_ID, i.Invoice_No, i.Invoice_Date, i.Status, i.Total_Amount_HT, i.Total_Amount_TTC,
+                        i.Total_Discount, i.Total_TVA, i.Payment_Method, i.Terminal_ID, i.Cash_Session_ID,
+                        t.Terminal_Name, s.Session_No,
                         c.Client_Name,
                         SUM(sd.Line_Total_HT - (sd.Qty_Sold * b.Unit_Price_Received)) AS Total_Profit
                     FROM Sales_Invoices i
                     LEFT JOIN Clients c ON i.Client_ID = c.Client_ID
+                    LEFT JOIN POS_Terminals t ON i.Terminal_ID = t.Terminal_ID
+                    LEFT JOIN POS_Cash_Sessions s ON i.Cash_Session_ID = s.Cash_Session_ID
                     LEFT JOIN Sales_Details sd ON i.Invoice_ID = sd.Invoice_ID
                     LEFT JOIN Inventory_Batches b ON sd.Batch_ID = b.Batch_ID
                     WHERE 1=1

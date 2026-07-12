@@ -27,7 +27,7 @@ TABLE_IMPORT_ORDER = [
     'Reception_Log', 'Reception_Details', 'Inventory_Batches',
     'Inventory_Count_Sessions', 'Inventory_Count_Lines', 'Inventory_Count_Scans',
     'Active_Containers', 'External_Transfer_Log', 'External_Transfer_Details',
-    'Clients', 'Sales_Invoices', 'Sales_Details', 'Client_Payments',
+    'Clients', 'POS_Terminals', 'POS_Cash_Sessions', 'Sales_Invoices', 'Sales_Details', 'Client_Payments',
     'Client_Credit_Notes', 'Client_Credit_Note_Details', 'Stock_Movement_Log',
     'Supplier_Credit_Notes', 'Credit_Note_Details', 'Supplier_Payments', 'SystemLogs' # <-- تمت الإضافة هنا
 ]

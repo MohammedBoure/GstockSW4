@@ -585,7 +585,7 @@ class SalesHistoryTab(QWidget):
         
         filtered = []
         for inv in self.raw_data:
-            full_text = f"#{inv['Invoice_ID']} {inv.get('Client_Name','')} {inv.get('Status','')}".lower()
+            full_text = f"#{inv['Invoice_ID']} {inv.get('Invoice_No','')} {inv.get('Client_Name','')} {inv.get('Status','')}".lower()
             if txt and txt not in full_text: continue
             filtered.append(inv)
             
@@ -608,7 +608,8 @@ class SalesHistoryTab(QWidget):
                 return it
 
             # Store ID in first item
-            id_item = item(f"#{inv['Invoice_ID']}")
+            invoice_label = inv.get('Invoice_No') or f"#{inv['Invoice_ID']}"
+            id_item = item(invoice_label)
             id_item.setData(Qt.UserRole, inv)
             self.table.setItem(r, 0, id_item)
             

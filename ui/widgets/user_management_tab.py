@@ -76,6 +76,25 @@ SYSTEM_PERMISSIONS = {
             "act_inventory_export": "Exporter vers Excel"
         }
     },
+    "5. VENTES": {
+        "label": "Ventes & Caisses",
+        "icon": "fa5s.cash-register",
+        "perms": {
+            "nav_sales": "Acces aux ventes",
+            "tab_sales_invoices": "Historique des ventes",
+            "tab_sales_returns": "Retours de vente",
+            "tab_sales_payments": "Paiements clients",
+            "act_create_sale": "Creer une vente",
+            "act_validate_sale": "Valider une vente",
+            "act_sale_without_client": "Vente comptoir sans client",
+            "act_return_sale": "Retour de vente",
+            "act_cancel_sale": "Annuler une vente",
+            "act_edit_sale": "Modifier une vente",
+            "act_pos_open_session": "Ouvrir une caisse",
+            "act_pos_close_session": "Cloturer une caisse",
+            "act_edit_closed_cash_session": "Modifier une session cloturee"
+        }
+    },
     "6. SOUS_TRAITANTS": {
         "label": "🧾 Sous-Traitants",
         "icon": "fa5s.file-invoice-dollar",

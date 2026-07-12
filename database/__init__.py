@@ -31,6 +31,8 @@ from .client_manager import ClientManager
 from .sales_manager import SalesManager
 from .client_payment_manager import ClientPaymentManager
 from .client_credit_note_manager import ClientCreditNoteManager
+from .pos_terminal_manager import POSTerminalManager
+from .cash_session_manager import CashSessionManager
 class LabDataManager:
 
     def __init__(self, db_instance: Database):
@@ -79,3 +81,5 @@ class LabDataManager:
         self.sales = SalesManager(db_instance)
         self.client_payments = ClientPaymentManager(db_instance)
         self.client_credit_notes = ClientCreditNoteManager(db_instance)
+        self.pos_terminals = POSTerminalManager(db_instance)
+        self.cash_sessions = CashSessionManager(db_instance)

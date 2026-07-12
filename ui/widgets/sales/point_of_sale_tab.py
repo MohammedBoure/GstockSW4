@@ -1,11 +1,12 @@
 # ui/widgets/sales/point_of_sale_tab.py
 
 import logging
+import uuid
 from datetime import date
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                                QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
                                QHeaderView, QComboBox, QMessageBox, QDoubleSpinBox, QSpinBox,
-                               QDateEdit, QFrame, QCompleter, QAbstractItemView)
+                               QDateEdit, QFrame, QCompleter, QAbstractItemView, QInputDialog)
 from PySide6.QtCore import Qt, QDate, Signal, QStringListModel, QTimer
 from ui.formatting import format_money
 
@@ -77,12 +78,17 @@ class PointOfSaleTab(QWidget):
         self.batches_cache = []
         self.search_map = {}
         self.barcode_map = {}
+        self.terminal_id = None
+        self.terminal_label = "Caisse"
+        self.cash_session_id = None
+        self.cash_session_no = None
         self.scan_timer = QTimer(self)
         self.scan_timer.setSingleShot(True)
         self.scan_timer.timeout.connect(self.process_instant_scan)
         
         self.init_ui()
         self.load_initial_data()
+        self.refresh_cash_session_context()
 
     def init_ui(self):
         pass
@@ -196,6 +202,25 @@ class PointOfSaleTab(QWidget):
         summary_title = QLabel("Résumé de la Vente")
         summary_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; margin-bottom: 10px;")
         right_layout.addWidget(summary_title)
+
+        self.lbl_pos_context = QLabel("Caisse : non initialisee")
+        self.lbl_pos_context.setWordWrap(True)
+        self.lbl_pos_context.setStyleSheet("font-size: 12px; color: #2c3e50; padding: 6px; background: #f4f7fa; border-radius: 6px;")
+
+        session_buttons = QHBoxLayout()
+        self.btn_open_session = QPushButton("Ouvrir caisse")
+        self.btn_close_session = QPushButton("Cloturer")
+        self.btn_open_session.clicked.connect(self.open_cash_session)
+        self.btn_close_session.clicked.connect(self.close_cash_session)
+        session_buttons.addWidget(self.btn_open_session)
+        session_buttons.addWidget(self.btn_close_session)
+
+        self.cb_payment_method = QComboBox()
+        self.cb_payment_method.addItem("Especes", "Cash")
+        self.cb_payment_method.addItem("Carte", "Card")
+        self.cb_payment_method.addItem("Virement", "Transfer")
+        self.cb_payment_method.addItem("Versement", "Versement")
+        self.cb_payment_method.addItem("Autre", "Other")
         
         self.lbl_total_ht = QLabel("Total HT : 0.00 DA")
         self.lbl_total_ht.setObjectName("SubTotalLabel")
@@ -243,6 +268,10 @@ class PointOfSaleTab(QWidget):
         self.btn_clear.setCursor(Qt.PointingHandCursor)
         self.btn_clear.clicked.connect(self.clear_cart)
         
+        right_layout.addWidget(self.lbl_pos_context)
+        right_layout.addLayout(session_buttons)
+        right_layout.addWidget(QLabel("Paiement :"))
+        right_layout.addWidget(self.cb_payment_method)
         right_layout.addWidget(self.lbl_total_ht)
         right_layout.addWidget(self.lbl_total_tva)
         right_layout.addWidget(self.lbl_total_remise)
@@ -260,6 +289,107 @@ class PointOfSaleTab(QWidget):
         combo.setInsertPolicy(QComboBox.NoInsert)
         combo.completer().setFilterMode(Qt.MatchContains)
         combo.completer().setCaseSensitivity(Qt.CaseInsensitive)
+
+    def get_current_user_id(self):
+        try:
+            main_window = self.window()
+            current_user = getattr(main_window, 'current_user', None)
+            if isinstance(current_user, dict):
+                return current_user.get('User_ID') or current_user.get('id')
+        except Exception:
+            pass
+        try:
+            from database.system_logger import active_user_id
+            return active_user_id.get()
+        except Exception:
+            return None
+
+    def refresh_cash_session_context(self):
+        terminal = self.data_manager.pos_terminals.get_or_create_default_terminal()
+        if not terminal:
+            self.terminal_id = None
+            self.cash_session_id = None
+            self.lbl_pos_context.setText("Caisse : terminal indisponible")
+            self.btn_validate.setEnabled(False)
+            return
+
+        self.terminal_id = terminal.get('Terminal_ID')
+        self.terminal_label = terminal.get('Terminal_Name') or terminal.get('Terminal_Code') or "Caisse"
+        session = self.data_manager.cash_sessions.get_open_session(self.terminal_id)
+        if session:
+            self.cash_session_id = session.get('Cash_Session_ID')
+            self.cash_session_no = session.get('Session_No')
+            self.lbl_pos_context.setText(f"{self.terminal_label}\nSession ouverte : {self.cash_session_no}")
+            self.btn_open_session.setEnabled(False)
+            self.btn_close_session.setEnabled(True)
+            self.btn_validate.setEnabled(True)
+        else:
+            self.cash_session_id = None
+            self.cash_session_no = None
+            self.lbl_pos_context.setText(f"{self.terminal_label}\nAucune session de caisse ouverte")
+            self.btn_open_session.setEnabled(True)
+            self.btn_close_session.setEnabled(False)
+            self.btn_validate.setEnabled(False)
+
+    def open_cash_session(self):
+        if not self.terminal_id:
+            self.refresh_cash_session_context()
+        if not self.terminal_id:
+            QMessageBox.warning(self, "Caisse", "Terminal POS indisponible.")
+            return
+        amount, ok = QInputDialog.getDouble(
+            self, "Ouvrir caisse", "Fond de caisse initial:", 0.0, 0.0, 999999999.0, 2
+        )
+        if not ok:
+            return
+        success, session = self.data_manager.cash_sessions.open_session(
+            self.terminal_id,
+            self.get_current_user_id(),
+            opening_amount=amount,
+        )
+        if success:
+            self.refresh_cash_session_context()
+            QMessageBox.information(self, "Caisse", f"Session ouverte: {session.get('Session_No')}")
+        else:
+            QMessageBox.warning(self, "Caisse", session.get('message', "Impossible d'ouvrir la caisse."))
+
+    def close_cash_session(self):
+        if not self.cash_session_id:
+            self.refresh_cash_session_context()
+        if not self.cash_session_id:
+            QMessageBox.warning(self, "Caisse", "Aucune session ouverte.")
+            return
+        if self.cart_table.rowCount() > 0:
+            QMessageBox.warning(self, "Caisse", "Videz ou validez le panier avant de cloturer la caisse.")
+            return
+        summary = self.data_manager.cash_sessions.get_session_summary(self.cash_session_id)
+        expected_cash = float(summary.get('Expected_Cash') or 0)
+        amount, ok = QInputDialog.getDouble(
+            self,
+            "Cloturer caisse",
+            f"Especes attendues hors fond de caisse: {format_money(expected_cash)} DA\nMontant cash compte:",
+            expected_cash,
+            0.0,
+            999999999.0,
+            2,
+        )
+        if not ok:
+            return
+        success, result = self.data_manager.cash_sessions.close_session(
+            self.cash_session_id,
+            self.get_current_user_id(),
+            counted_cash=amount,
+        )
+        if success:
+            diff = float(result.get('Cash_Difference') or 0)
+            QMessageBox.information(
+                self,
+                "Caisse",
+                f"Session cloturee.\nTotal: {format_money(result.get('Expected_Total') or 0)} DA\nEcart cash: {format_money(diff)} DA",
+            )
+            self.refresh_cash_session_context()
+        else:
+            QMessageBox.warning(self, "Caisse", result.get('message', "Impossible de cloturer la caisse."))
 
     def load_initial_data(self):
         # Load clients
@@ -590,7 +720,7 @@ class PointOfSaleTab(QWidget):
         self.cart_table.setRowCount(0)
         self.calculate_totals()
 
-    def validate_sale(self):
+    def _validate_sale_legacy(self):
         if self.cart_table.rowCount() == 0:
             QMessageBox.warning(self, "Erreur", "Le panier est vide.")
             return
@@ -679,3 +809,72 @@ class PointOfSaleTab(QWidget):
             self.load_initial_data()
         else:
             QMessageBox.critical(self, "Erreur", "Une erreur est survenue lors de l'enregistrement des détails.")
+
+    def validate_sale(self):
+        if self.cart_table.rowCount() == 0:
+            QMessageBox.warning(self, "Erreur", "Le panier est vide.")
+            return
+
+        self.refresh_cash_session_context()
+        if not self.cash_session_id:
+            QMessageBox.warning(self, "Caisse", "Veuillez ouvrir une session de caisse avant de vendre.")
+            return
+
+        client = self.cb_client.currentData()
+        client_id = client['Client_ID'] if client else None
+        invoice_date = self.date_edit.date().toString("yyyy-MM-dd")
+
+        cart_items = []
+        for row in range(self.cart_table.rowCount()):
+            batch = self.cart_table.item(row, 0).data(Qt.UserRole)
+            qty = self.cart_table.cellWidget(row, 4).value()
+            price_ht = self.cart_table.cellWidget(row, 5).currentData() or 0.0
+            remise_val = self.cart_table.cellWidget(row, 6).get_value()
+            remise_type = self.cart_table.cellWidget(row, 6).get_type()
+
+            line_ht = qty * price_ht
+            if remise_type == "%":
+                remise_pct = max(0.0, min(remise_val, 100.0))
+            else:
+                remise_amount = max(0.0, min(remise_val, line_ht))
+                remise_pct = (remise_amount / line_ht * 100.0) if line_ht > 0 else 0.0
+
+            cart_items.append({
+                "product_id": batch['Product_ID'],
+                "batch_id": batch['Batch_ID'],
+                "qty_sold": qty,
+                "unit_price_ht": price_ht,
+                "discount_percent": remise_pct,
+                "tva_percent": self.cart_table.cellWidget(row, 7).value(),
+            })
+
+        self.btn_validate.setEnabled(False)
+        request_id = str(uuid.uuid4())
+        try:
+            success, result = self.data_manager.sales.create_validated_sale(
+                client_id=client_id,
+                invoice_date=invoice_date,
+                cart_items=cart_items,
+                terminal_id=self.terminal_id,
+                cash_session_id=self.cash_session_id,
+                payment_method=self.cb_payment_method.currentData() or "Cash",
+                user_id=self.get_current_user_id(),
+                request_id=request_id,
+                notes=None if client else "Vente sans client",
+            )
+        finally:
+            self.btn_validate.setEnabled(bool(self.cash_session_id))
+
+        if success:
+            invoice_label = result.get('invoice_no') or f"#{result.get('invoice_id')}"
+            QMessageBox.information(self, "Succès", f"Vente enregistrée avec succès ! Facture {invoice_label}")
+            self.clear_cart()
+            self.load_initial_data()
+        else:
+            QMessageBox.critical(
+                self,
+                "Erreur",
+                result.get('message', "Une erreur est survenue lors de l'enregistrement de la vente."),
+            )
+            self.load_initial_data()
+        self.refresh_cash_session_context()
