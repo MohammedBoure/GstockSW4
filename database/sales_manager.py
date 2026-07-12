@@ -51,6 +51,13 @@ class SalesManager:
                 FOREIGN KEY (Closed_By) REFERENCES Users(User_ID) ON DELETE SET NULL
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS Sales_Invoice_Sequences (
+                Year_Num INT UNSIGNED NOT NULL PRIMARY KEY,
+                Next_Seq INT UNSIGNED NOT NULL DEFAULT 1,
+                Updated_At DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+            """,
             "ALTER TABLE Sales_Invoices ADD COLUMN Invoice_No VARCHAR(100) NULL;",
             "ALTER TABLE Sales_Invoices ADD COLUMN Terminal_ID INT UNSIGNED NULL;",
             "ALTER TABLE Sales_Invoices ADD COLUMN Cash_Session_ID BIGINT UNSIGNED NULL;",
@@ -60,6 +67,7 @@ class SalesManager:
             "CREATE UNIQUE INDEX uq_sales_sale_uuid ON Sales_Invoices(Sale_UUID);",
             "CREATE INDEX idx_sales_terminal ON Sales_Invoices(Terminal_ID);",
             "CREATE INDEX idx_sales_cash_session ON Sales_Invoices(Cash_Session_ID);",
+            "CREATE INDEX idx_sales_invoice_sequences_updated ON Sales_Invoice_Sequences(Updated_At);",
             "ALTER TABLE Sales_Invoices ADD CONSTRAINT fk_sales_terminal FOREIGN KEY (Terminal_ID) REFERENCES POS_Terminals(Terminal_ID) ON DELETE SET NULL;",
             "ALTER TABLE Sales_Invoices ADD CONSTRAINT fk_sales_cash_session FOREIGN KEY (Cash_Session_ID) REFERENCES POS_Cash_Sessions(Cash_Session_ID) ON DELETE SET NULL;",
         ]
@@ -75,6 +83,47 @@ class SalesManager:
                         logging.warning(f"Sales POS schema warning: {err}")
         except Exception as e:
             logging.error(f"Sales POS schema check failed: {e}", exc_info=True)
+
+    def _invoice_year_from_date(self, invoice_date):
+        try:
+            return int(datetime.strptime(str(invoice_date), "%Y-%m-%d").year)
+        except Exception:
+            try:
+                return int(str(invoice_date)[:4])
+            except Exception:
+                return datetime.now().year
+
+    def _next_invoice_no(self, cursor, invoice_date):
+        year_num = self._invoice_year_from_date(invoice_date)
+        cursor.execute(
+            """
+            SELECT MAX(CAST(SUBSTRING_INDEX(Invoice_No, '/', -1) AS UNSIGNED)) AS MaxSeq
+            FROM Sales_Invoices
+            WHERE Invoice_No LIKE %s
+            """,
+            (f"{year_num}/%",),
+        )
+        row = cursor.fetchone() or {}
+        next_seq = int(row.get('MaxSeq') or 0) + 1
+        cursor.execute(
+            """
+            INSERT INTO Sales_Invoice_Sequences (Year_Num, Next_Seq)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE Year_Num = Year_Num
+            """,
+            (year_num, next_seq),
+        )
+        cursor.execute(
+            "SELECT Next_Seq FROM Sales_Invoice_Sequences WHERE Year_Num = %s FOR UPDATE",
+            (year_num,),
+        )
+        seq_row = cursor.fetchone() or {}
+        seq = int(seq_row.get('Next_Seq') or 1)
+        cursor.execute(
+            "UPDATE Sales_Invoice_Sequences SET Next_Seq = %s WHERE Year_Num = %s",
+            (seq + 1, year_num),
+        )
+        return f"{year_num}/{seq:04d}"
 
     def create_invoice(self, client_id, invoice_date, status='Draft', notes=None, user_id=None):
         """
@@ -201,17 +250,7 @@ class SalesManager:
                     }
                 locked_batches[batch_id] = batch
 
-            seq = int(session.get('Next_Invoice_Seq') or 1)
-            date_part = str(invoice_date).replace("-", "")[:8] or datetime.now().strftime("%Y%m%d")
-            invoice_no = f"POS{int(terminal_id):02d}-{date_part}-{seq:05d}"
-            cursor.execute(
-                """
-                UPDATE POS_Cash_Sessions
-                SET Next_Invoice_Seq = Next_Invoice_Seq + 1
-                WHERE Cash_Session_ID = %s
-                """,
-                (cash_session_id,),
-            )
+            invoice_no = self._next_invoice_no(cursor, invoice_date)
 
             cursor.execute(
                 """
@@ -892,14 +931,16 @@ class SalesManager:
                 query = """
                     SELECT 
                         i.Invoice_ID, i.Invoice_No, i.Invoice_Date, i.Status, i.Total_Amount_HT, i.Total_Amount_TTC,
-                        i.Total_Discount, i.Total_TVA, i.Payment_Method, i.Terminal_ID, i.Cash_Session_ID,
+                        i.Total_Discount, i.Total_TVA, i.Payment_Method, i.Terminal_ID, i.Cash_Session_ID, i.Created_By,
                         t.Terminal_Name, s.Session_No,
                         c.Client_Name,
+                        COALESCE(u.Full_Name, u.Username) AS User_Name,
                         SUM(sd.Line_Total_HT - (sd.Qty_Sold * b.Unit_Price_Received)) AS Total_Profit
                     FROM Sales_Invoices i
                     LEFT JOIN Clients c ON i.Client_ID = c.Client_ID
                     LEFT JOIN POS_Terminals t ON i.Terminal_ID = t.Terminal_ID
                     LEFT JOIN POS_Cash_Sessions s ON i.Cash_Session_ID = s.Cash_Session_ID
+                    LEFT JOIN Users u ON i.Created_By = u.User_ID
                     LEFT JOIN Sales_Details sd ON i.Invoice_ID = sd.Invoice_ID
                     LEFT JOIN Inventory_Batches b ON sd.Batch_ID = b.Batch_ID
                     WHERE 1=1
@@ -926,6 +967,129 @@ class SalesManager:
         except mysql.connector.Error as e:
             logging.error(f"Error fetching sales with profit: {e}")
             return []
+
+    def get_sales_operations_history(self, start_date=None, end_date=None, client_id=None):
+        rows = []
+        invoices = self.get_sales_with_profit(start_date, end_date, client_id)
+        for inv in invoices:
+            inv['Row_Type'] = 'Sale'
+            inv['Event_Date'] = inv.get('Invoice_Date')
+            inv['Operation_Label'] = 'Vente'
+            inv['Amount_Entered'] = None
+            inv['Caisse_Label'] = inv.get('Terminal_Name') or "-"
+            rows.append(inv)
+
+        if client_id:
+            return rows
+
+        try:
+            with self.db.get_db_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+                query = """
+                    SELECT
+                        s.Cash_Session_ID, s.Session_No, s.Status,
+                        s.Opening_Amount, s.Expected_Cash, s.Expected_Card, s.Expected_Transfer,
+                        s.Counted_Cash, s.Cash_Difference, s.Opened_At, s.Closed_At,
+                        COALESCE(tot.Expected_Total, 0) AS Expected_Total,
+                        t.Terminal_Name, t.Terminal_Code,
+                        COALESCE(open_user.Full_Name, open_user.Username) AS Opened_By_Name,
+                        COALESCE(close_user.Full_Name, close_user.Username) AS Closed_By_Name
+                    FROM POS_Cash_Sessions s
+                    LEFT JOIN POS_Terminals t ON s.Terminal_ID = t.Terminal_ID
+                    LEFT JOIN Users open_user ON s.Opened_By = open_user.User_ID
+                    LEFT JOIN Users close_user ON s.Closed_By = close_user.User_ID
+                    LEFT JOIN (
+                        SELECT Cash_Session_ID, SUM(Total_Amount_TTC) AS Expected_Total
+                        FROM Sales_Invoices
+                        WHERE Status <> 'Cancelled'
+                        GROUP BY Cash_Session_ID
+                    ) tot ON s.Cash_Session_ID = tot.Cash_Session_ID
+                    WHERE 1=1
+                """
+                params = []
+                if start_date:
+                    query += " AND (DATE(s.Opened_At) >= %s OR DATE(s.Closed_At) >= %s)"
+                    params.extend([start_date, start_date])
+                if end_date:
+                    query += " AND (DATE(s.Opened_At) <= %s OR DATE(s.Closed_At) <= %s)"
+                    params.extend([end_date, end_date])
+                cursor.execute(query, tuple(params))
+                sessions = cursor.fetchall()
+        except mysql.connector.Error as e:
+            logging.error(f"Error fetching sales operation history: {e}")
+            sessions = []
+
+        def event_in_range(value):
+            if not value:
+                return False
+            date_text = str(value)[:10]
+            if start_date and date_text < str(start_date):
+                return False
+            if end_date and date_text > str(end_date):
+                return False
+            return True
+
+        for session in sessions:
+            caisse_label = session.get('Terminal_Name') or session.get('Terminal_Code') or "-"
+            if event_in_range(session.get('Opened_At')):
+                rows.append({
+                    'Row_Type': 'Cash_Open',
+                    'Operation_ID': f"OPEN-{session['Cash_Session_ID']}",
+                    'Invoice_No': session.get('Session_No'),
+                    'Invoice_ID': None,
+                    'Invoice_Date': session.get('Opened_At'),
+                    'Event_Date': session.get('Opened_At'),
+                    'Operation_Label': 'Ouverture caisse',
+                    'Client_Name': f"Session {session.get('Session_No')}",
+                    'Status': 'Open',
+                    'Total_Amount_HT': 0,
+                    'Total_Amount_TTC': 0,
+                    'Total_Profit': 0,
+                    'Payment_Method': '-',
+                    'Terminal_Name': caisse_label,
+                    'Caisse_Label': caisse_label,
+                    'Session_No': session.get('Session_No'),
+                    'User_Name': session.get('Opened_By_Name') or "-",
+                    'Amount_Entered': session.get('Opening_Amount'),
+                    'Opening_Amount': session.get('Opening_Amount'),
+                    'Counted_Cash': None,
+                    'Cash_Difference': None,
+                })
+            if event_in_range(session.get('Closed_At')):
+                expected_total = session.get('Expected_Total') or 0
+                rows.append({
+                    'Row_Type': 'Cash_Close',
+                    'Operation_ID': f"CLOSE-{session['Cash_Session_ID']}",
+                    'Invoice_No': session.get('Session_No'),
+                    'Invoice_ID': None,
+                    'Invoice_Date': session.get('Closed_At'),
+                    'Event_Date': session.get('Closed_At'),
+                    'Operation_Label': 'Cloture caisse',
+                    'Client_Name': (
+                        f"Comptage cash: {session.get('Counted_Cash') or 0} | "
+                        f"Ecart: {session.get('Cash_Difference') or 0}"
+                    ),
+                    'Status': 'Closed',
+                    'Total_Amount_HT': 0,
+                    'Total_Amount_TTC': expected_total,
+                    'Total_Profit': 0,
+                    'Payment_Method': '-',
+                    'Terminal_Name': caisse_label,
+                    'Caisse_Label': caisse_label,
+                    'Session_No': session.get('Session_No'),
+                    'User_Name': session.get('Closed_By_Name') or "-",
+                    'Amount_Entered': session.get('Counted_Cash'),
+                    'Opening_Amount': session.get('Opening_Amount'),
+                    'Counted_Cash': session.get('Counted_Cash'),
+                    'Cash_Difference': session.get('Cash_Difference'),
+                })
+
+        def sort_key(row):
+            value = row.get('Event_Date') or row.get('Invoice_Date') or ""
+            return str(value)
+
+        rows.sort(key=sort_key, reverse=True)
+        return rows
 
     def get_invoice_details_with_profit(self, invoice_id):
         """

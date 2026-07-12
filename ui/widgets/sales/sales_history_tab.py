@@ -56,7 +56,7 @@ def export_invoice_to_pdf(data_manager, invoice_data, parent_widget):
     try:
         raw_date = str(invoice_data.get('Invoice_Date', ''))
         year_val = raw_date.split('-')[0] if '-' in raw_date else str(datetime.now().year)
-        formatted_ref = f"{year_val}/{int(invoice_id):03d}"
+        formatted_ref = invoice_data.get('Invoice_No') or f"{year_val}/{int(invoice_id):03d}"
     except:
         formatted_ref = str(invoice_id)
 
@@ -272,7 +272,8 @@ class SaleDetailsDialog(QDialog):
         self.data_manager = data_manager
         self.invoice_data = invoice_data
         self.parent_tab = parent # To trigger refresh
-        self.setWindowTitle(f"📄 Détails de la Vente #{invoice_data['Invoice_ID']}")
+        sale_ref = invoice_data.get('Invoice_No') or f"#{invoice_data['Invoice_ID']}"
+        self.setWindowTitle(f"Détails de la Vente {sale_ref}")
         self.resize(850, 500)
         self.details_list = []
         self.init_ui()
@@ -508,7 +509,7 @@ class SalesHistoryTab(QWidget):
         self.cb_client.currentIndexChanged.connect(self.load_sales_data)
         
         self.search_input = BarcodeLineEdit()
-        self.search_input.setPlaceholderText("🔍 Rechercher par ID ou Client...")
+        self.search_input.setPlaceholderText("Rechercher par ID, Client, Caisse ou Utilisateur...")
         self.search_input.textChanged.connect(self.apply_filter_local)
         
         btn_refresh = QPushButton()
@@ -535,7 +536,11 @@ class SalesHistoryTab(QWidget):
         
         # --- 2. Table Section ---
         self.table = QTableWidget()
-        cols = ["ID", "Date", "Client", "Statut", "Total HT", "Total TTC", "Fayda (Profit)"]
+        cols = [
+            "ID", "Date", "Operation", "Client / Details", "Statut",
+            "Caisse", "Utilisateur", "Paiement", "Montant saisi",
+            "Total TTC", "Fayda (Profit)"
+        ]
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         
@@ -547,7 +552,10 @@ class SalesHistoryTab(QWidget):
         header.setSectionResizeMode(QHeaderView.Stretch)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
         
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -577,7 +585,7 @@ class SalesHistoryTab(QWidget):
         d_to = self.date_to.date().toString("yyyy-MM-dd")
         client_id = self.cb_client.currentData()
         
-        self.raw_data = self.data_manager.sales.get_sales_with_profit(d_from, d_to, client_id)
+        self.raw_data = self.data_manager.sales.get_sales_operations_history(d_from, d_to, client_id)
         self.apply_filter_local()
 
     def apply_filter_local(self):
@@ -585,7 +593,13 @@ class SalesHistoryTab(QWidget):
         
         filtered = []
         for inv in self.raw_data:
-            full_text = f"#{inv['Invoice_ID']} {inv.get('Invoice_No','')} {inv.get('Client_Name','')} {inv.get('Status','')}".lower()
+            full_text = (
+                f"{inv.get('Operation_ID','')} #{inv.get('Invoice_ID','')} "
+                f"{inv.get('Invoice_No','')} {inv.get('Operation_Label','')} "
+                f"{inv.get('Client_Name','')} {inv.get('Status','')} "
+                f"{inv.get('Caisse_Label','')} {inv.get('Terminal_Name','')} "
+                f"{inv.get('User_Name','')} {inv.get('Session_No','')}"
+            ).lower()
             if txt and txt not in full_text: continue
             filtered.append(inv)
             
@@ -607,29 +621,48 @@ class SalesHistoryTab(QWidget):
                 if font: it.setFont(font)
                 return it
 
-            # Store ID in first item
-            invoice_label = inv.get('Invoice_No') or f"#{inv['Invoice_ID']}"
+            row_type = inv.get('Row_Type', 'Sale')
+            is_cash_row = row_type in {'Cash_Open', 'Cash_Close'}
+            row_bg = QColor("#eef6ff") if row_type == 'Cash_Open' else QColor("#fff7e6") if row_type == 'Cash_Close' else None
+            row_font = QFont("Segoe UI", 9, QFont.Bold) if is_cash_row else None
+
+            # Store row data in first item
+            invoice_label = inv.get('Invoice_No') or inv.get('Operation_ID') or f"#{inv.get('Invoice_ID')}"
             id_item = item(invoice_label)
             id_item.setData(Qt.UserRole, inv)
             self.table.setItem(r, 0, id_item)
             
-            self.table.setItem(r, 1, item(str(inv['Invoice_Date'])))
+            self.table.setItem(r, 1, item(str(inv.get('Event_Date') or inv.get('Invoice_Date') or "-")))
+            self.table.setItem(r, 2, item(inv.get('Operation_Label') or "Vente", font=row_font))
             
             client_name = inv.get('Client_Name')
             if not client_name:
                 client_name = "Vente comptoir"
-            self.table.setItem(r, 2, item(client_name, Qt.AlignLeft | Qt.AlignVCenter, font=QFont("Segoe UI", 9, QFont.Bold)))
+            self.table.setItem(r, 3, item(client_name, Qt.AlignLeft | Qt.AlignVCenter, font=QFont("Segoe UI", 9, QFont.Bold)))
             
             status_item = item(inv['Status'])
-            self.table.setItem(r, 3, status_item)
+            self.table.setItem(r, 4, status_item)
             
-            self.table.setItem(r, 4, item(format_money(inv.get('Total_Amount_HT', 0))))
-            self.table.setItem(r, 5, item(format_money(inv.get('Total_Amount_TTC', 0))))
+            self.table.setItem(r, 5, item(inv.get('Caisse_Label') or inv.get('Terminal_Name') or "-"))
+            self.table.setItem(r, 6, item(inv.get('User_Name') or "-"))
+            self.table.setItem(r, 7, item(inv.get('Payment_Method') or "-"))
+
+            amount_entered = inv.get('Amount_Entered')
+            self.table.setItem(r, 8, item(format_money(amount_entered) if amount_entered is not None else "-"))
+            self.table.setItem(r, 9, item(format_money(inv.get('Total_Amount_TTC', 0))))
             
             profit = float(inv.get('Total_Profit') or 0)
-            total_profit_period += profit
+            if row_type == 'Sale':
+                total_profit_period += profit
             profit_item = item(format_money(profit), Qt.AlignCenter, "#27ae60" if profit > 0 else "#c0392b", QFont("Segoe UI", 9, QFont.Bold))
-            self.table.setItem(r, 6, profit_item)
+            self.table.setItem(r, 10, profit_item)
+
+            if row_bg:
+                for col in range(self.table.columnCount()):
+                    cell = self.table.item(r, col)
+                    if cell:
+                        cell.setBackground(QBrush(row_bg))
+                        cell.setFont(row_font)
             
         self.table.setSortingEnabled(True)
         self.lbl_total_period_profit.setText(f"Bénéfice Total Période : {format_money(total_profit_period)} DA")
@@ -638,17 +671,19 @@ class SalesHistoryTab(QWidget):
         row = self.table.currentRow()
         if row < 0: return
         data = self.table.item(row, 0).data(Qt.UserRole)
-        if data:
+        if data and data.get('Row_Type') == 'Sale':
             dlg = SaleDetailsDialog(self.data_manager, data, self)
             dlg.exec()
 
     def on_selection_changed(self):
-        has_selection = len(self.table.selectedItems()) > 0
+        row = self.table.currentRow()
+        data = self.table.item(row, 0).data(Qt.UserRole) if row >= 0 and self.table.item(row, 0) else None
+        has_selection = bool(data and data.get('Row_Type') == 'Sale')
         self.btn_print_selected.setEnabled(has_selection)
 
     def print_selected_invoice(self):
         row = self.table.currentRow()
         if row < 0: return
         data = self.table.item(row, 0).data(Qt.UserRole)
-        if data:
+        if data and data.get('Row_Type') == 'Sale':
             export_invoice_to_pdf(self.data_manager, data, self)

@@ -529,6 +529,12 @@ SCHEMA_QUERIES = [
         FOREIGN KEY (Closed_By) REFERENCES Users(User_ID) ON DELETE SET NULL
     );""",
 
+    """CREATE TABLE IF NOT EXISTS Sales_Invoice_Sequences (
+        Year_Num INT UNSIGNED NOT NULL PRIMARY KEY,
+        Next_Seq INT UNSIGNED NOT NULL DEFAULT 1,
+        Updated_At DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    );""",
+
     """CREATE TABLE IF NOT EXISTS Sales_Invoices (
         Invoice_ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         Invoice_No VARCHAR(100) NULL,
@@ -746,6 +752,7 @@ INDEX_QUERIES = [
     "CREATE INDEX idx_sales_terminal ON Sales_Invoices(Terminal_ID);",
     "CREATE INDEX idx_sales_cash_session ON Sales_Invoices(Cash_Session_ID);",
     "CREATE INDEX idx_sales_details_invoice ON Sales_Details(Invoice_ID);",
+    "CREATE INDEX idx_sales_invoice_sequences_updated ON Sales_Invoice_Sequences(Updated_At);",
     "CREATE INDEX idx_pos_cash_terminal_status ON POS_Cash_Sessions(Terminal_ID, Status);",
     "CREATE INDEX idx_client_payments_client ON Client_Payments(Client_ID);",
     "CREATE INDEX idx_client_credit_client ON Client_Credit_Notes(Client_ID);"
