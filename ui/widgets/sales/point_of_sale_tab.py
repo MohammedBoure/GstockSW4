@@ -310,7 +310,10 @@ class PointOfSaleTab(QWidget):
             self.terminal_id = None
             self.cash_session_id = None
             self.lbl_pos_context.setText("Caisse : terminal indisponible")
-            self.btn_validate.setEnabled(False)
+            # Keep the action clickable so the user gets an actionable error
+            # instead of a button that appears to do nothing.
+            self.btn_validate.setEnabled(True)
+            self.btn_validate.setToolTip("Le terminal POS est indisponible.")
             return
 
         self.terminal_id = terminal.get('Terminal_ID')
@@ -323,13 +326,17 @@ class PointOfSaleTab(QWidget):
             self.btn_open_session.setEnabled(False)
             self.btn_close_session.setEnabled(True)
             self.btn_validate.setEnabled(True)
+            self.btn_validate.setToolTip("")
         else:
             self.cash_session_id = None
             self.cash_session_no = None
             self.lbl_pos_context.setText(f"{self.terminal_label}\nAucune session de caisse ouverte")
             self.btn_open_session.setEnabled(True)
             self.btn_close_session.setEnabled(False)
-            self.btn_validate.setEnabled(False)
+            # Do not silently disable the sale action. validate_sale() will
+            # explain that opening the caisse is required.
+            self.btn_validate.setEnabled(True)
+            self.btn_validate.setToolTip("Ouvrez une session de caisse avant de valider la vente.")
 
     def open_cash_session(self):
         if not self.terminal_id:
@@ -816,6 +823,9 @@ class PointOfSaleTab(QWidget):
             return
 
         self.refresh_cash_session_context()
+        if not self.terminal_id:
+            QMessageBox.warning(self, "Caisse", "Le terminal POS est indisponible.")
+            return
         if not self.cash_session_id:
             QMessageBox.warning(self, "Caisse", "Veuillez ouvrir une session de caisse avant de vendre.")
             return
@@ -862,6 +872,10 @@ class PointOfSaleTab(QWidget):
                 request_id=request_id,
                 notes=None if client else "Vente sans client",
             )
+        except Exception as exc:
+            logging.exception("Unexpected error while validating POS sale")
+            success = False
+            result = {"message": str(exc) or "Une erreur inattendue est survenue."}
         finally:
             self.btn_validate.setEnabled(bool(self.cash_session_id))
 
