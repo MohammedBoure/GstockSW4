@@ -720,6 +720,16 @@ SCHEMA_QUERIES = [
         details TEXT,
         ip_address VARCHAR(50),
         FOREIGN KEY (user_id) REFERENCES Users(User_ID) ON DELETE SET NULL
+    );""",
+
+    """CREATE TABLE IF NOT EXISTS Print_Templates (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        template_type VARCHAR(50) NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        settings_json TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY idx_type_name (template_type, name)
     );"""
 ]
 

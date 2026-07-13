@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QHeaderView, QComboBox, QMessageBox, QDoubleSpinBox, QSpinBox,
                                QDateEdit, QFrame, QCompleter, QAbstractItemView, QInputDialog)
 from PySide6.QtCore import Qt, QDate, Signal, QStringListModel, QTimer
+from branding import get_logo_path
 from ui.formatting import format_money
 
 class RemiseWidget(QWidget):
@@ -234,6 +235,12 @@ class PointOfSaleTab(QWidget):
         self.lbl_total_ttc = QLabel("TOTAL TTC : 0.00 DA")
         self.lbl_total_ttc.setObjectName("TotalLabel")
         self.lbl_total_ttc.setAlignment(Qt.AlignCenter)
+        
+        from PySide6.QtWidgets import QCheckBox
+        self.chk_print_receipt = QCheckBox("🖨️ Imprimer la Facture (Thermique)")
+        self.chk_print_receipt.setChecked(True)
+        self.chk_print_receipt.setStyleSheet("font-size: 14px; font-weight: bold; color: #2c3e50;")
+        right_layout.addWidget(self.chk_print_receipt)
         
         self.btn_validate = QPushButton("✔️ Valider la Vente")
         self.btn_validate.setMinimumHeight(60)
@@ -817,6 +824,73 @@ class PointOfSaleTab(QWidget):
         else:
             QMessageBox.critical(self, "Erreur", "Une erreur est survenue lors de l'enregistrement des détails.")
 
+    def _build_receipt_data(self, invoice_label, invoice_date, client, cart_items):
+        """Build a complete receipt payload from the same values used for the sale."""
+        receipt_items = []
+        subtotal_ht = 0.0
+        remise_total = 0.0
+        net_ht_total = 0.0
+        tva_total = 0.0
+        total_ttc = 0.0
+
+        for row, item in enumerate(cart_items):
+            batch = self.cart_table.item(row, 0).data(Qt.UserRole) or {}
+            qty = float(item.get("qty_sold") or 0)
+            unit_price_ht = float(item.get("unit_price_ht") or 0)
+            discount_percent = max(0.0, min(100.0, float(item.get("discount_percent") or 0)))
+            tva_percent = max(0.0, min(100.0, float(item.get("tva_percent") or 0)))
+
+            price_before = qty * unit_price_ht
+            discount_amount = min(price_before, price_before * discount_percent / 100.0)
+            net_ht = max(0.0, price_before - discount_amount)
+            tva_amount = net_ht * tva_percent / 100.0
+            line_total_ttc = net_ht + tva_amount
+
+            subtotal_ht += price_before
+            remise_total += discount_amount
+            net_ht_total += net_ht
+            tva_total += tva_amount
+            total_ttc += line_total_ttc
+
+            receipt_items.append({
+                "name": batch.get("Product_Name") or "Produit",
+                "qty": qty,
+                "unit_price_ht": round(unit_price_ht, 2),
+                "price": round(unit_price_ht, 2),
+                "price_before": round(price_before, 2),
+                "discount_percent": round(discount_percent, 2),
+                "discount_amount": round(discount_amount, 2),
+                "net_ht": round(net_ht, 2),
+                "tva_percent": round(tva_percent, 2),
+                "tva_amount": round(tva_amount, 2),
+                "total": round(line_total_ttc, 2),
+            })
+
+        printer_config = getattr(getattr(self.data_manager, "printer", None), "config", {}) or {}
+        company = {
+            "name": printer_config.get("lab_name", ""),
+            "address": printer_config.get("lab_address", ""),
+            "nif": printer_config.get("lab_nif", ""),
+            "rc": printer_config.get("lab_rc", ""),
+        }
+        return {
+            "id": str(invoice_label),
+            "date": invoice_date,
+            "client": client["Client_Name"] if client else "Passager",
+            "cashier": self.terminal_label,
+            "currency": "DA",
+            "company": company,
+            "logo_path": printer_config.get("receipt_logo_path") or get_logo_path(),
+            "items": receipt_items,
+            "subtotal_ht": round(subtotal_ht, 2),
+            "remise_total": round(remise_total, 2),
+            "net_ht": round(net_ht_total, 2),
+            "tva_total": round(tva_total, 2),
+            "total": round(total_ttc, 2),
+            "show_discount": remise_total > 0,
+            "show_tva": tva_total > 0,
+        }
+
     def validate_sale(self):
         if self.cart_table.rowCount() == 0:
             QMessageBox.warning(self, "Erreur", "Le panier est vide.")
@@ -881,6 +955,23 @@ class PointOfSaleTab(QWidget):
 
         if success:
             invoice_label = result.get('invoice_no') or f"#{result.get('invoice_id')}"
+            
+            # Print if enabled
+            if self.chk_print_receipt.isChecked():
+                try:
+                    invoice_data = self._build_receipt_data(
+                        invoice_label, invoice_date, client, cart_items
+                    )
+                    print_success, msg = self.data_manager.printer.print_receipt(invoice_data)
+                    if not print_success:
+                        import logging
+                        logging.error(f"Echec impression recu: {msg}")
+                        QMessageBox.warning(self, "Impression", f"La vente est validée, mais l'impression a échoué.\nErreur: {msg}")
+                except Exception as e:
+                    import logging
+                    logging.error(f"Erreur lors de la préparation de l'impression: {e}", exc_info=True)
+                    QMessageBox.warning(self, "Erreur Impression", f"La vente a été enregistrée avec succès, mais une erreur s'est produite lors de l'impression.\nDétail: {e}")
+
             QMessageBox.information(self, "Succès", f"Vente enregistrée avec succès ! Facture {invoice_label}")
             self.clear_cart()
             self.load_initial_data()

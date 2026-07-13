@@ -556,6 +556,8 @@ class MainWindow(QMainWindow):
                 widget.tabs.addTab(widget.tab_db, "🗄️ Base de données")
             if self.has_permission("tab_set_printer"):
                 widget.tabs.addTab(widget.tab_printer, "🖨️ Imprimante")
+                widget.tabs.addTab(widget.tab_barcode_config, "🏷️ Éditeur Étiquettes")
+                widget.tabs.addTab(widget.tab_receipt_config, "🧾 Facture Thermique")
             if self.has_permission("tab_set_system"):
                 widget.tabs.addTab(widget.tab_system, "⚙️ Système")
             if self.has_permission("tab_system_logs"):
