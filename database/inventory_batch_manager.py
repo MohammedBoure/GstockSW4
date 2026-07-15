@@ -829,6 +829,162 @@ class InventoryBatchManager:
             if conn and conn.is_connected():
                 cursor.close()
                 conn.close()
+
+    @staticmethod
+    def generate_ean13_for_batch(batch_id: int) -> str:
+        """
+        Generates an EAN-13 barcode using prefix '200' + 9-digit Batch_ID + check digit.
+        """
+        prefix = "200"
+        padded_id = str(batch_id).zfill(9)
+        base = prefix + padded_id
+        
+        odds = sum(int(base[i]) for i in range(0, 12, 2))
+        evens = sum(int(base[i]) for i in range(1, 12, 2))
+        total = odds + (evens * 3)
+        check_digit = (10 - (total % 10)) % 10
+        
+        return base + str(check_digit)
+
+    def add_direct_batch(self, data: dict, user_id: int = None) -> bool:
+        """
+        Adds a batch directly to inventory without a Reception (BR) or Purchase Order (PO).
+        Generates robust EAN-13 barcode after insert.
+        """
+        conn = None
+        try:
+            conn = self.db.get_raw_connection()
+            conn.start_transaction()
+            cursor = conn.cursor()
+
+            query = """
+                INSERT INTO Inventory_Batches 
+                (Product_ID, Location_ID, Lot_Number, Expiry_Date, 
+                 Quantity_Initial, Quantity_Current, Status, Created_At,
+                 Unit_Price_Received, Tax_Rate_Percent, Discount_Percent,
+                 Selling_Price_HT, Selling_Price_HT_2, Selling_Price_HT_3, Selling_Price_HT_4,
+                 Selling_TVA_Percent, Reception_Note, Supplier_ID, External_Barcode, Internal_Barcode) 
+                VALUES (%s, %s, %s, %s, %s, %s, 'Available', NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'TMP')
+            """
+            
+            params = (
+                data['Product_ID'], data['Location_ID'], data['Lot_Number'], data['Expiry_Date'],
+                data['Quantity'], data['Quantity'], 
+                data.get('Unit_Price_HT', 0.0), data.get('Tax_Rate_Percent', 19.0), data.get('Discount_Percent', 0.0),
+                data.get('Selling_Price_HT', 0.0), data.get('Selling_Price_HT_2', 0.0),
+                data.get('Selling_Price_HT_3', 0.0), data.get('Selling_Price_HT_4', 0.0),
+                data.get('Selling_TVA_Percent', 19.0), data.get('Batch_Note', ''),
+                data.get('Supplier_ID'), data.get('External_Barcode', '').strip()
+            )
+            
+            cursor.execute(query, params)
+            batch_id = cursor.lastrowid 
+
+            final_barcode = self.generate_ean13_for_batch(batch_id)
+            cursor.execute("UPDATE Inventory_Batches SET Internal_Barcode = %s WHERE Batch_ID = %s", (final_barcode, batch_id))
+
+            cursor.execute("""
+                INSERT INTO Stock_Movement_Log
+                (Product_ID, Batch_ID, Movement_Type, Qty_Change, Unit_Used, User_ID, Notes)
+                VALUES (%s, %s, 'Purchase_Receive', %s, 'Unité', %s, 'Ajout rapide direct')
+            """, (data['Product_ID'], batch_id, data['Quantity'], user_id))
+
+            ext_barcode = data.get('External_Barcode', '').strip()
+            if ext_barcode:
+                cursor.execute("SELECT Barcode FROM Products_Master WHERE Product_ID = %s", (data['Product_ID'],))
+                res = cursor.fetchone()
+                existing_barcodes = res[0] if res and res[0] else ''
+                barcodes_list = [b.strip() for b in existing_barcodes.split(',')] if existing_barcodes else []
+                if ext_barcode not in barcodes_list:
+                    barcodes_list.append(ext_barcode)
+                    new_barcodes_str = ','.join(barcodes_list)
+                    cursor.execute("UPDATE Products_Master SET Barcode = %s WHERE Product_ID = %s", 
+                                   (new_barcodes_str, data['Product_ID']))
+
+            conn.commit()
+            data['Generated_Barcode'] = final_barcode
+            return True
+
+        except Exception as e:
+            if conn: conn.rollback()
+            import logging
+            logging.error(f"Database error in add_direct_batch: {e}")
+            return False
+        finally:
+            if conn and conn.is_connected():
+                cursor.close()
+                conn.close()
+
+    def update_direct_batch(self, batch_id: int, data: dict, user_id: int = None) -> bool:
+        """
+        Updates an existing directly-added batch (BR_ID is NULL).
+        """
+        conn = None
+        try:
+            conn = self.db.get_raw_connection()
+            conn.start_transaction()
+            cursor = conn.cursor()
+
+            # Optional validation: check if BR_ID is NULL
+            cursor.execute("SELECT BR_ID FROM Inventory_Batches WHERE Batch_ID = %s", (batch_id,))
+            res = cursor.fetchone()
+            if res and res[0] is not None:
+                raise ValueError("Cannot edit a batch associated with a Reception Log (BR_ID is not NULL).")
+
+            query = """
+                UPDATE Inventory_Batches SET
+                Product_ID = %s, Location_ID = %s, Lot_Number = %s, Expiry_Date = %s,
+                Quantity_Initial = %s, Quantity_Current = %s,
+                Unit_Price_Received = %s, Tax_Rate_Percent = %s, Discount_Percent = %s,
+                Selling_Price_HT = %s, Selling_Price_HT_2 = %s, Selling_Price_HT_3 = %s, Selling_Price_HT_4 = %s,
+                Selling_TVA_Percent = %s, Reception_Note = %s, Supplier_ID = %s, External_Barcode = %s
+                WHERE Batch_ID = %s
+            """
+            
+            params = (
+                data['Product_ID'], data['Location_ID'], data['Lot_Number'], data['Expiry_Date'],
+                data['Quantity'], data['Quantity'], 
+                data.get('Unit_Price_HT', 0.0), data.get('Tax_Rate_Percent', 19.0), data.get('Discount_Percent', 0.0),
+                data.get('Selling_Price_HT', 0.0), data.get('Selling_Price_HT_2', 0.0),
+                data.get('Selling_Price_HT_3', 0.0), data.get('Selling_Price_HT_4', 0.0),
+                data.get('Selling_TVA_Percent', 19.0), data.get('Batch_Note', ''), data.get('Supplier_ID'),
+                data.get('External_Barcode', '').strip(),
+                batch_id
+            )
+            
+            cursor.execute(query, params)
+
+            cursor.execute("""
+                INSERT INTO Stock_Movement_Log
+                (Product_ID, Batch_ID, Movement_Type, Qty_Change, Unit_Used, User_ID, Notes)
+                VALUES (%s, %s, 'Adjustment', 0, 'Unité', %s, 'Modification complète du lot direct')
+            """, (data['Product_ID'], batch_id, user_id))
+
+            ext_barcode = data.get('External_Barcode', '').strip()
+            if ext_barcode:
+                cursor.execute("SELECT Barcode FROM Products_Master WHERE Product_ID = %s", (data['Product_ID'],))
+                res = cursor.fetchone()
+                existing_barcodes = res[0] if res and res[0] else ''
+                barcodes_list = [b.strip() for b in existing_barcodes.split(',')] if existing_barcodes else []
+                if ext_barcode not in barcodes_list:
+                    barcodes_list.append(ext_barcode)
+                    new_barcodes_str = ','.join(barcodes_list)
+                    cursor.execute("UPDATE Products_Master SET Barcode = %s WHERE Product_ID = %s", 
+                                   (new_barcodes_str, data['Product_ID']))
+
+            conn.commit()
+            return True
+
+        except Exception as e:
+            if conn: conn.rollback()
+            import logging
+            logging.error(f"Database error in update_direct_batch: {e}")
+            return False
+        finally:
+            if conn and conn.is_connected():
+                cursor.close()
+                conn.close()
+
     @staticmethod
     def generate_smart_barcode(prefix, item_serial):
         """
@@ -889,7 +1045,8 @@ class InventoryBatchManager:
                         M.Manuf_Name,  
                         
                         -- جلب اسم المورد بدقة: الأولوية للمربوط بالاستلام، ثم المربوط بالطلب
-                        COALESCE(S_RL.Supplier_Name, S_PO.Supplier_Name, '---') AS Supplier_Name,
+                        COALESCE(S_DIR.Supplier_Name, S_RL.Supplier_Name, S_PO.Supplier_Name, '---') AS Supplier_Name,
+                        COALESCE(B.Supplier_ID, RL.Supplier_ID, PO.Supplier_ID) AS Supplier_ID,
                         
                         P.Manuf_ID,
                         P.Preferred_Automate_ID,
@@ -945,6 +1102,8 @@ class InventoryBatchManager:
                         Purchase_Orders PO ON B.PO_ID = PO.PO_ID
                     LEFT JOIN
                         Suppliers S_PO ON PO.Supplier_ID = S_PO.Supplier_ID
+                    LEFT JOIN
+                        Suppliers S_DIR ON B.Supplier_ID = S_DIR.Supplier_ID
                     
                     {where_str}
                     

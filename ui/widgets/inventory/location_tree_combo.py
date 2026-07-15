@@ -102,5 +102,13 @@ class LocationTreeComboBox(QComboBox):
         if location_id is None:
             self.setCurrentIndex(0)
             return
-        # ملاحظة: اختيار عنصر داخل شجرة ComboBox يحتاج لمسار الفهرس (Index path)
-        pass
+            
+        model = self.model()
+        indexes = model.match(model.index(0, 0), Qt.UserRole, location_id, 1, Qt.MatchRecursive)
+        if indexes:
+            idx = indexes[0]
+            self.tree_view.setCurrentIndex(idx)
+            # For QComboBox with tree view, to force the display text update:
+            self.setRootModelIndex(idx.parent())
+            self.setCurrentIndex(idx.row())
+            self.setRootModelIndex(model.index(-1, -1)) # Reset root model index for popup
