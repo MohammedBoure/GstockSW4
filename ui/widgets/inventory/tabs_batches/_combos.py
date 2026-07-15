@@ -49,3 +49,17 @@ def populate_automates(self):
         _adjust_combo_view_width(self.combo_automate)
     except Exception:
         pass
+
+
+def populate_suppliers(self):
+    self.combo_supplier.clear()
+    self.combo_supplier.addItem("🚚 Fournisseurs", None)
+    try:
+        conn = self.manager.db.get_raw_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT Supplier_ID, Supplier_Name FROM Suppliers WHERE Deleted_At IS NULL ORDER BY Supplier_Name")
+        for row in cursor.fetchall():
+            self.combo_supplier.addItem(row['Supplier_Name'], row['Supplier_ID'])
+        _adjust_combo_view_width(self.combo_supplier)
+    except Exception as e:
+        print(f"Error loading suppliers: {e}")

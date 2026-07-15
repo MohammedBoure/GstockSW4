@@ -383,6 +383,8 @@ SCHEMA_QUERIES = [
     """ALTER TABLE Inventory_Batches ADD COLUMN Selling_Price_HT_4 DECIMAL(15, 2) DEFAULT 0.00;""",
     """ALTER TABLE Inventory_Batches ADD COLUMN Selling_TVA_Percent DECIMAL(5, 2) DEFAULT 0.00;""",
     """ALTER TABLE Inventory_Batches ADD COLUMN External_Barcode VARCHAR(100) NULL;""",
+    """ALTER TABLE Inventory_Batches ADD COLUMN Supplier_ID INT UNSIGNED NULL;""",
+    """ALTER TABLE Inventory_Batches ADD CONSTRAINT fk_batch_supplier FOREIGN KEY (Supplier_ID) REFERENCES Suppliers(Supplier_ID) ON DELETE SET NULL ON UPDATE CASCADE;""",
 
     """CREATE TABLE IF NOT EXISTS Inventory_Count_Sessions (
         Session_ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
