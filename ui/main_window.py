@@ -21,6 +21,7 @@ from .widgets.master_data.locations_tab import LocationsTab
 from .widgets.master_data.automates_tab import AutomatesTab
 from .widgets.master_data.waste_reasons_tab import WasteReasonsTab
 from .widgets.settings.settings_tab import SettingsTab
+from .widgets.settings.local_settings import LocalSettingsStore
 from .widgets.master_data.product_families_tab import ProductFamiliesTab
 from .widgets.master_data.packaging_units_tab import PackagingUnitsTab
 from .widgets.user_management_tab import UserManagementTab
@@ -45,6 +46,13 @@ class MainWindow(QMainWindow):
         self.data_manager = data_manager
         self.current_user = current_user 
         self.connection_error = connection_error
+        self.local_settings = LocalSettingsStore(current_user)
+        if self.data_manager is not None:
+            self.data_manager.current_user = current_user
+            self.data_manager.local_settings = self.local_settings
+            self.data_manager.can_manage_stamps = self.has_permission("act_manage_stamps")
+            if hasattr(self.data_manager, "printer") and hasattr(self.data_manager.printer, "set_local_settings"):
+                self.data_manager.printer.set_local_settings(self.local_settings)
 
         if self.current_user:
             # نستخدم get للبحث عن User_ID أو id لتجنب أخطاء المفاتيح
@@ -278,8 +286,8 @@ class MainWindow(QMainWindow):
             (1, "Données de Base", "fa5s.layer-group"),
             (2, "Achats & Entrées", "fa5s.shopping-cart"), 
             (3, "Stock & Magasin",  "fa5s.boxes"),
-            (9, "Inventaire", "fa5s.clipboard-list"),
             (6, "Sous-Traitants",   "fa5s.file-invoice-dollar"), 
+            (9, "Inventaire", "fa5s.clipboard-list"),
             (10, "Point de Vente",  "fa5s.cash-register"),
             (12, "Historique Ventes", "fa5s.chart-line"),
             (7, "Traçabilité",      "fa5s.history"),
@@ -522,13 +530,14 @@ class MainWindow(QMainWindow):
         elif page_id == 2:
             widget = ProcurementTab(self.data_manager)
             if self.has_permission("tab_proc_po"):
-                widget.tabs.addTab(widget.po_tab, "📦 Bons de Commandes")
+                widget.tabs.addTab(widget.po_tab, "🛒 Bons de Commandes")
             if self.has_permission("tab_proc_reception"):
                 widget.tabs.addTab(widget.history_tab, "📜 Bons de Réceptions")
             if self.has_permission("tab_proc_credit"):
                 widget.tabs.addTab(widget.credit_tab, "↩️ Avoirs / Retours")
             if self.has_permission("tab_proc_reclamation"):
-                widget.tabs.addTab(widget.reclamation_tab, "⚠️ Réclamations")
+                from ui.icons import get_reclamation_icon
+                widget.tabs.addTab(widget.reclamation_tab, get_reclamation_icon(), " Réclamations")
                 
         elif page_id == 3:
             widget = InventoryTab(self.data_manager)

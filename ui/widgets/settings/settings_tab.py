@@ -1,6 +1,5 @@
 # ui/widgets/settings/settings_tab.py
 
-import json
 import os
 import logging
 import win32print
@@ -16,9 +15,10 @@ import mysql.connector
 import sys
 from dotenv import dotenv_values
 
-from .pdf_config_tab import PdfConfigWidget
 from .barcode_visual_editor import BarcodeVisualEditor
 from .receipt_visual_editor import ReceiptVisualEditor
+from .pdf.pdf_config_dialog import PdfConfigDialog
+from .local_settings import LocalSettingsStore
 from .system_logs_tab import SystemLogsTab
 
 logging.basicConfig(
@@ -35,13 +35,25 @@ def get_external_path(filename):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, filename)
 
-CONFIG_FILE = get_external_path("config.json")
 ENV_FILE = get_external_path(".env")
 
 class SettingsTab(QWidget):
-    def __init__(self, data_manager):
+    def __init__(self, data_manager, current_user=None, can_manage_stamps=None, local_store=None):
         super().__init__()
         self.data_manager = data_manager
+        self.current_user = current_user or getattr(data_manager, "current_user", None)
+        self.can_manage_stamps = (
+            bool(can_manage_stamps)
+            if can_manage_stamps is not None
+            else bool(getattr(data_manager, "can_manage_stamps", False))
+        )
+        self.local_store = (
+            local_store
+            or getattr(data_manager, "local_settings", None)
+            or LocalSettingsStore(self.current_user)
+        )
+        self.config_file = self.local_store.general_path
+        self.pdf_config_dialog = None
 
         # Paramètres par défaut
         self.settings = {
@@ -97,9 +109,9 @@ class SettingsTab(QWidget):
 
         self.tab_barcode_config = BarcodeVisualEditor(self.data_manager)
         self.tab_receipt_config = ReceiptVisualEditor(self.data_manager)
-
+        self.tab_pdf_config = QWidget()
+        self._setup_pdf_launcher()
         self.tab_system_logs = SystemLogsTab(self.data_manager) if self.data_manager else QWidget()
-        self.tab_pdf_config = PdfConfigWidget(self.data_manager)
 
         self.tabs.addTab(self.tab_general, "Général")
         self.tabs.addTab(self.tab_db, "Base de données")
@@ -114,7 +126,11 @@ class SettingsTab(QWidget):
 
         # Bottom buttons setup
         btn_layout = QHBoxLayout()
-        btn_save = QPushButton("💾 Enregistrer les paramètres")
+        btn_save = QPushButton("💾 Enregistrer les paramètres du programme")
+        btn_save.setToolTip(
+            "Enregistre uniquement les réglages généraux locaux. "
+            "Les réglages PDF se gèrent dans la fenêtre Configuration PDF."
+        )
         btn_save.setStyleSheet("background-color: #27ae60; color: white; padding: 10px; font-weight: bold;")
         btn_save.clicked.connect(self.save_settings)
 
@@ -362,6 +378,48 @@ class SettingsTab(QWidget):
         layout.addWidget(btn_test_print)
         layout.addStretch()
 
+    def _setup_pdf_launcher(self):
+        layout = QVBoxLayout(self.tab_pdf_config)
+        layout.setContentsMargins(30, 30, 30, 30)
+
+        title = QLabel("<h2>Configuration PDF locale</h2>")
+        description = QLabel(
+            "Les réglages PDF, les cachets et leur position sont propres à l'utilisateur "
+            "sur cet appareil. Ouvrez la fenêtre dédiée pour disposer de tout l'espace nécessaire."
+        )
+        description.setWordWrap(True)
+
+        open_button = QPushButton("Ouvrir la configuration PDF")
+        open_button.setMinimumHeight(48)
+        open_button.setStyleSheet(
+            "background-color: #9b59b6; color: white; font-weight: bold; "
+            "font-size: 15px; padding: 10px;"
+        )
+        open_button.clicked.connect(self.open_pdf_config_dialog)
+
+        load_hint = QLabel(
+            "La fenêtre propose aussi un chargement volontaire depuis la base de données. "
+            "Aucun chargement distant n'est effectué automatiquement."
+        )
+        load_hint.setWordWrap(True)
+        load_hint.setStyleSheet("color: #566573;")
+
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(open_button)
+        layout.addWidget(load_hint)
+        layout.addStretch()
+
+    def open_pdf_config_dialog(self):
+        dialog = PdfConfigDialog(
+            self.data_manager,
+            current_user=self.current_user,
+            can_manage_stamps=self.can_manage_stamps,
+            local_store=self.local_store,
+            parent=self,
+        )
+        dialog.exec()
+
     def _setup_system_tab(self):
         layout = QVBoxLayout(self.tab_system)
         grp_sys = QGroupBox("Variables d'environnement")
@@ -416,20 +474,9 @@ class SettingsTab(QWidget):
 
     # --- Fonctions Générales (Save & Load) ---
     def load_settings(self):
-        """قراءة الإعدادات مع معالجة الأخطاء لتجنب فقدان البيانات السابقة"""
-        logging.info(f"📁 Tentative de lecture du fichier : {CONFIG_FILE}")
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.settings.update(data)
-                logging.info("✅ Paramètres chargés avec succès.")
-            except Exception as e:
-                logging.error(f"❌ Erreur de lecture du JSON: {e}")
-                QMessageBox.warning(self, "Erreur Lecture",
-                                    f"Impossible de lire vos anciens paramètres.\nLe fichier {CONFIG_FILE} est peut-être corrompu.\n{e}")
-        else:
-            logging.warning("⚠️ Fichier config.json introuvable, utilisation des paramètres par défaut.")
+        """Load this user's general settings from the local store."""
+        logging.info(f"Reading local settings: {self.config_file}")
+        self.settings.update(self.local_store.load_general(self.settings))
 
     def load_database_settings_from_env(self):
         if not os.path.exists(ENV_FILE):
@@ -452,15 +499,8 @@ class SettingsTab(QWidget):
             logging.warning(f"Impossible de lire les parametres DB depuis .env: {e}")
 
     def save_settings(self):
-        """Sauvegarder toutes les modifications (globales et PDF)"""
-        # 1. Sauvegarder les paramètres PDF (dans la base de données)
-        if hasattr(self, 'tab_pdf_config'):
-            try:
-                self.tab_pdf_config.save_settings()
-            except Exception as e:
-                logging.error(f"Erreur lors de la sauvegarde des paramètres PDF dans la BD: {e}")
-
-        # 2. قراءة الإعدادات من الواجهة وتخزينها (تُكتب أخيراً لتكون لها الأولوية المطلقة)
+        """Save general settings for this user without touching PDF settings."""
+        # Read the general settings from the form before writing the local store.
         self.settings["lab_name"] = self.txt_lab_name.text()
         self.settings["lab_address"] = self.txt_lab_address.text()
         self.settings["lab_nif"] = self.txt_lab_nif.text()
@@ -492,14 +532,15 @@ class SettingsTab(QWidget):
         self.settings["auto_backup_max_files"] = self.spin_max_backups.value()
         self.settings["backup_paths"] = [self.list_backup_paths.item(i).text() for i in range(self.list_backup_paths.count())]
 
-        # 3. الكتابة المباشرة في ملف config.json
         try:
-            logging.info(f"💾 Sauvegarde vers : {CONFIG_FILE}")
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, ensure_ascii=False, indent=4)
+            logging.info(f"💾 Sauvegarde vers : {self.config_file}")
+            self.local_store.save_general(self.settings)
 
             if hasattr(self.data_manager, 'printer'):
-                self.data_manager.printer.reload_settings()
+                if hasattr(self.data_manager.printer, "set_local_settings"):
+                    self.data_manager.printer.set_local_settings(self.local_store)
+                else:
+                    self.data_manager.printer.reload_settings()
 
             # إعادة تشغيل مؤقت الحفظ التلقائي في الخلفية بالإعدادات الجديدة
             try:
@@ -514,7 +555,7 @@ class SettingsTab(QWidget):
 
             # رسالة تشخيصية: ستظهر لك بالضبط ما تم كتابته داخل الملف لتكون مطمئناً
             msg = (
-                f"Paramètres enregistrés avec succès dans :\n{CONFIG_FILE}\n\n"
+                f"Paramètres généraux enregistrés localement dans :\n{self.config_file}\n\n"
                 f"Auto-Backup Actif : {self.settings['auto_backup_enabled']}\n"
                 f"Intervalle : {self.settings['auto_backup_interval']} min\n"
                 f"Dossiers : {len(self.settings['backup_paths'])}"

@@ -433,11 +433,17 @@ class BackupManagerMixin:
                 return False, "No Excel files were found in this backup."
 
             EXCEL_IMPORT_ORDER = [
-                'Users', 'Location_Types', 'Product_Families', 'Packaging_Units',
-                'Manufacturers', 'Suppliers', 'External_Partners', 'Locations',
-                'Automates', 'Waste_Reasons', 'Products_Master', 'Purchase_Orders',
-                'PO_Details', 'Reception_Log', 'Reception_Details', 'Inventory_Batches',
-                'Supplier_Credit_Notes', 'Credit_Note_Details'
+                'Users', 'Company_Settings', 'Company_Stamps', 'Location_Types', 'Product_Families', 'Packaging_Units',
+                'Manufacturers', 'Suppliers', 'External_Partners', 'Locations', 'Automates', 'Waste_Reasons',
+                'Products_Master', 'Product_Documents', 'Purchase_Orders', 'PO_Details',
+                'Reception_Log', 'Reception_Details', 'Inventory_Batches',
+                'Inventory_Count_Sessions', 'Inventory_Count_Lines', 'Inventory_Count_Scans',
+                'Active_Containers', 'External_Transfer_Log', 'External_Transfer_Details',
+                'Clients', 'POS_Terminals', 'POS_Cash_Sessions', 'Sales_Invoice_Sequences',
+                'Sales_Invoices', 'Sales_Details', 'Client_Payments',
+                'Client_Credit_Notes', 'Client_Credit_Note_Details', 'Stock_Movement_Log',
+                'Supplier_Credit_Notes', 'Credit_Note_Details', 'Supplier_Payments',
+                'Print_Templates', 'SystemLogs'
             ]
 
             ordered_files = [f"{t}.xlsx" for t in EXCEL_IMPORT_ORDER if f"{t}.xlsx" in excel_files]

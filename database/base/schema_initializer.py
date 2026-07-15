@@ -79,6 +79,7 @@ _ALL_PERMISSIONS = [
     "act_inventory_apply",
     "act_inventory_cancel",
     "act_inventory_export",
+    "act_manage_stamps",
     "act_create_sale",
     "act_validate_sale",
     "act_return_sale",
@@ -118,6 +119,19 @@ SCHEMA_QUERIES = [
         Settings_ID INT PRIMARY KEY DEFAULT 1,
         Settings_Data JSON,
         Banner_Image LONGBLOB
+    );""",
+
+    """CREATE TABLE IF NOT EXISTS Company_Stamps (
+        Stamp_ID INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        Stamp_Name VARCHAR(150) NOT NULL,
+        Image_Data LONGBLOB NOT NULL,
+        Position_X_CM DECIMAL(7,2) NOT NULL DEFAULT 13.00,
+        Position_Y_CM DECIMAL(7,2) NOT NULL DEFAULT 22.00,
+        Width_CM DECIMAL(7,2) NOT NULL DEFAULT 4.00,
+        Height_CM DECIMAL(7,2) NOT NULL DEFAULT 4.00,
+        Is_Active BOOLEAN NOT NULL DEFAULT FALSE,
+        Created_At TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        Updated_At TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     );""",
 
     # --- 2. Master Data ---
@@ -235,6 +249,7 @@ SCHEMA_QUERIES = [
         Preferred_Automate_ID INT UNSIGNED NULL,
         Storage_Temp_Req VARCHAR(50) NULL,
         Is_Billable BOOLEAN DEFAULT FALSE,
+        Show_In_Alerts BOOLEAN DEFAULT FALSE,
         Default_Selling_Price_HT DECIMAL(15, 2) DEFAULT 0.00,
         Selling_Price_HT_2 DECIMAL(15, 2) DEFAULT 0.00,
         Selling_Price_HT_3 DECIMAL(15, 2) DEFAULT 0.00,
@@ -251,6 +266,9 @@ SCHEMA_QUERIES = [
     """ALTER TABLE Products_Master ADD COLUMN Selling_Price_HT_3 DECIMAL(15, 2) DEFAULT 0.00;""",
     """ALTER TABLE Products_Master ADD COLUMN Selling_Price_HT_4 DECIMAL(15, 2) DEFAULT 0.00;""",
     """ALTER TABLE Products_Master ADD COLUMN Selling_TVA_Percent DECIMAL(5, 2) DEFAULT 0.00;""",
+    """ALTER TABLE Products_Master ADD COLUMN Show_In_Alerts BOOLEAN NULL DEFAULT NULL;""",
+    """UPDATE Products_Master SET Show_In_Alerts = TRUE WHERE Show_In_Alerts IS NULL;""",
+    """ALTER TABLE Products_Master MODIFY COLUMN Show_In_Alerts BOOLEAN NOT NULL DEFAULT FALSE;""",
 
     """CREATE TABLE IF NOT EXISTS Product_Documents (
         Doc_ID INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

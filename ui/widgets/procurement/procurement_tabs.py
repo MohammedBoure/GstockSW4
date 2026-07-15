@@ -24,6 +24,8 @@ from .avoir import CreditNoteTab
 from .reclamation_tab import ReclamationTab 
 from ui.widgets.procurement.po_list_view import PurchaseOrderListView
 from ui.formatting import format_quantity
+from ui.widgets.settings.pdf.pdf_stamp import fit_stamp_size_cm, get_active_stamp, SignatureFooter
+from ui.widgets.settings.local_settings import get_local_settings_store
 
 
 def get_resource_path(relative_path):
@@ -44,9 +46,9 @@ class ProcurementTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
-            QTabWidget::pane { border: 1px solid #dcdcdc; background: white; }
-            QTabBar::tab { padding: 10px 20px; font-weight: bold; color: #555; }
-            QTabBar::tab:selected { color: #1abc9c; border-bottom: 2px solid #1abc9c; background: #fff; }
+            QTabWidget::pane { border: none; background: transparent; }
+            QTabBar::tab { padding: 10px 20px; font-weight: bold; color: #555; border: none; }
+            QTabBar::tab:selected { color: #1abc9c; border-bottom: 2px solid #1abc9c; background: transparent; }
         """)
         
         # تهيئة الواجهات فقط دون إضافتها
@@ -124,7 +126,7 @@ class PurchaseOrdersTab(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         
         toolbar_frame = QFrame()
-        toolbar_frame.setStyleSheet("QFrame { background-color: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 6px; }")
+        toolbar_frame.setStyleSheet("QFrame { background-color: #f8f9fa; border: none; border-radius: 6px; }")
         controls = QHBoxLayout(toolbar_frame)
         
         today = QDate.currentDate()
@@ -158,7 +160,7 @@ class PurchaseOrdersTab(QWidget):
         btn_mark_sent = QPushButton("🚚 Soumettez la demande")
         btn_mark_sent.setStyleSheet(self.sent_btn_style)
         btn_mark_sent.clicked.connect(self.confirm_order_sent)
-        
+
         btn_pdf = QPushButton("📄 Bon de Commande (PDF)")
         btn_pdf.clicked.connect(self.export_po_pdf)
         btn_pdf.setStyleSheet(self.btn_style)
@@ -226,20 +228,9 @@ class PurchaseOrdersTab(QWidget):
             suppliers = self.manager.suppliers.get_all_suppliers() 
             products = self.manager.products.get_all_products()
             dialog = PurchaseOrderDialog(suppliers, products, self)
-            if dialog.exec():
-                data = dialog.get_data()
-                if data:
-                    po_id = self.manager.po.create_purchase_order(
-                        supplier_id=data['Supplier_ID'],
-                        order_date=data['Order_Date'],
-                        expected_delivery_date=data['Expected_Delivery_Date'],
-                        notes=data['Notes']
-                    )
-                    if po_id:
-                        data['PO_ID'] = po_id
-                        self.manager.po.update_full_order(po_id, data)
-                        self.refresh_orders()
-                        self.data_changed.emit()
+            dialog.exec()
+            self.refresh_orders()
+            self.data_changed.emit()
         except Exception as e:
             logging.error(f"Error: {e}")
 
@@ -265,14 +256,9 @@ class PurchaseOrdersTab(QWidget):
         else:
             formatted_po_id = raw_po_id
 
-        cwd = os.getcwd()
-        settings_path = os.path.join(cwd, "config.json")
-
         try:
-            if not os.path.exists(settings_path):
-                raise FileNotFoundError(f"Settings file not found at {settings_path}")
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                settings = json.load(f)
+            local_store = get_local_settings_store(self.manager)
+            settings = local_store.load_merged_pdf_settings()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load settings: {e}")
             return
@@ -290,7 +276,6 @@ class PurchaseOrdersTab(QWidget):
         try:
             PAGE_WIDTH, PAGE_HEIGHT = A4
             primary_color = colors.HexColor(settings.get('theme_color', '#0b666a'))
-            logo_path = os.path.normpath(settings.get('banner_path', ''))
             banner_h_cm = settings.get('banner_height_cm', 4.8)
 
             doc = SimpleDocTemplate(
@@ -312,9 +297,13 @@ class PurchaseOrdersTab(QWidget):
                 img_h = settings.get('banner_img_h_cm', 4.8) * cm
                 img_y = PAGE_HEIGHT - img_h - (settings.get('banner_img_y_cm', 0.0) * cm)
 
-                if os.path.exists(logo_path):
+                img_bytes = local_store.load_banner_bytes(settings)
+                if img_bytes:
+                    from reportlab.lib.utils import ImageReader
+                    import io
+                    img = ImageReader(io.BytesIO(img_bytes))
                     canvas.drawImage(
-                        logo_path, img_x, img_y,
+                        img, img_x, img_y,
                         width=img_w, height=img_h, mask='auto'
                     )
                 else:
@@ -393,17 +382,28 @@ class PurchaseOrdersTab(QWidget):
             elements.append(items_table)
 
             elements.append(Spacer(1, 2 * cm))
-            footer_label = settings.get('footer_left_label', 'Signature et Cachet')
-
-            sig_table = Table(
-                [[Paragraph(f"<b>{footer_label}</b>", styles["Normal"])]],
-                colWidths=[18.4 * cm]
+            f_left = ""
+            f_right = settings.get(
+                'footer_left_bl',
+                settings.get('footer_left_label', 'Responsable Stock'),
             )
-            sig_table.setStyle(TableStyle([
-                ('ALIGN', (0, 0), (-1, -1), 'RIGHT')
-            ]))
+            footer_height = float(settings.get('footer_height_cm', 2.5))
+            left_x = float(settings.get('footer_left_x_cm', 1.0))
+            right_x = float(settings.get('footer_right_x_cm', 12.0))
 
-            elements.append(sig_table)
+            active_stamp = get_active_stamp(local_store)
+            stamp_gap = float(settings.get('footer_stamp_gap_cm', 0.3))
+            stamp_area_w = float(settings.get('footer_stamp_area_w_cm', 6.0))
+            stamp_area_h = float(settings.get('footer_stamp_area_h_cm', 3.5))
+
+            footer = SignatureFooter(
+                f_left, f_right,
+                left_x, right_x,
+                footer_height,
+                active_stamp,
+                stamp_gap, stamp_area_w, stamp_area_h
+            )
+            elements.append(footer)
 
             doc.build(
                 elements,
