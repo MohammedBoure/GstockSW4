@@ -2,6 +2,7 @@ import json
 import socket
 import threading
 import unittest
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from tools.inventory_mobile_api import (
@@ -65,6 +66,19 @@ class InventoryMobileApiTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "SENT")
         self.assertEqual(self.received, ["6130001234567"])
+
+    def test_remote_scan_rejects_missing_api_key(self):
+        request = Request(
+            self.base_url + "/api/remote-scans",
+            data=json.dumps({"barcode": "6130001234567"}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(request, timeout=3)
+        self.assertEqual(raised.exception.code, 401)
+        raised.exception.close()
+        self.assertEqual(self.received, [])
 
     def test_udp_discovery_returns_desktop_identity(self):
         discovery = build_discovery_server(
