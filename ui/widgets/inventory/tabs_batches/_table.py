@@ -14,6 +14,11 @@ from ui.formatting import format_money, format_quantity
 
 
 # ---------------------------------------------------------------------------
+# أيقونات مخصصة
+# ---------------------------------------------------------------------------
+from ui.icons import get_reclamation_icon
+
+# ---------------------------------------------------------------------------
 # مساعد بناء خلية والتحقق من الصلاحيات
 # ---------------------------------------------------------------------------
 
@@ -159,8 +164,10 @@ def _fill_row(table, r, b, hide_fin):
         reclamation = ""
     bg_color = "#ffe4cd" if reclamation else None
 
+    prod_name = b.get('Product_Name', '---')
+
     prod_item = _make_item(
-        b.get('Product_Name', '---'),
+        prod_name,
         Qt.AlignLeft | Qt.AlignVCenter,
         bg_color=bg_color
     )
@@ -212,11 +219,16 @@ def _fill_row(table, r, b, hide_fin):
     else:
         for col in range(12, 19):
             table.setItem(r, col, _make_item('', bg_color=bg_color))
-        
+
     table.setItem(r, 19, _make_item(str(b.get('PO_ID') or '---'), bg_color=bg_color))
     table.setItem(r, 20, _make_item(b.get('Location_Name', '---'), bg_color=bg_color))
     table.setItem(r, 21, _make_item(reclamation, bg_color=bg_color))
 
+    v_header_item = QTableWidgetItem(str(r + 1))
+    if reclamation:
+        v_header_item.setIcon(get_reclamation_icon())
+    v_header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    table.setVerticalHeaderItem(r, v_header_item)
 # ---------------------------------------------------------------------------
 # الفرز
 # ---------------------------------------------------------------------------

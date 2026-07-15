@@ -95,6 +95,40 @@ def _to_date(val):
 # إجراءات الجدول الرئيسية
 # ---------------------------------------------------------------------------
 
+def on_vertical_header_clicked(self, logicalIndex):
+    """معالجة النقر على الهيدر العمودي (رقم الصف) لفتح تعديل الشكوى"""
+    try:
+        item = self.table.item(logicalIndex, 0)
+        if item:
+            batch_data = item.data(Qt.UserRole)
+            if batch_data:
+                self.edit_reclamation(batch_data)
+    except Exception as e:
+        logging.error(f"Error handling vertical header click: {e}")
+
+def edit_reclamation(self, batch_data):
+    """تعديل ملاحظة/شكوى الاستلام (Réclamation) للوط"""
+    raw_note = batch_data.get('Reception_Note')
+    current_note = str(raw_note).strip() if raw_note is not None else ""
+    if current_note.lower() == "none":
+        current_note = ""
+
+    new_note, ok = QInputDialog.getMultiLineText(
+        self,
+        "Modifier la Réclamation",
+        "Texte de la réclamation (laissez vide pour supprimer):",
+        current_note
+    )
+    if ok:
+        new_note = new_note.strip()
+        batch_id = batch_data.get('Batch_ID')
+        if self.manager.batches.update_batch_reception_note(batch_id, new_note):
+            self.load_data()
+            self.data_changed.emit()
+            QMessageBox.information(self, "Succès", "La réclamation a été mise à jour.")
+        else:
+            QMessageBox.warning(self, "Erreur", "Impossible de mettre à jour la réclamation.")
+
 def direct_use_process(self):
     """سحب مباشر من اللوط المحدد"""
     row_idx = self.table.currentRow()
