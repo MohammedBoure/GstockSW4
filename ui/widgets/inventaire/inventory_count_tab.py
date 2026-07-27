@@ -461,7 +461,7 @@ class InventoryCountTab(QWidget):
         filters_layout = QVBoxLayout(filters_frame)
         filters_layout.setContentsMargins(8, 8, 8, 8)
         filters_layout.setSpacing(6)
-        
+
         self.year_filter = QComboBox()
         current_year = datetime.datetime.now().year
         self.year_filter.addItems([str(current_year), str(current_year - 1), str(current_year - 2), "Toutes les années"])
@@ -471,7 +471,7 @@ class InventoryCountTab(QWidget):
 
         filters_layout.addSpacing(4)
         filters_layout.addWidget(QLabel("Recherche lignes:"))
-        
+
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Recherche")
         self.search_input.textChanged.connect(self.load_lines)
@@ -578,7 +578,7 @@ class InventoryCountTab(QWidget):
         has_session = self.current_session_id is not None
         status = (self.current_session or {}).get("Status")
         is_open = status in {"Counting", "Review"}
-        
+
         status_tr = {
             "Counting": "En cours",
             "Review": "Terminée",
@@ -586,10 +586,10 @@ class InventoryCountTab(QWidget):
             "Cancelled": "Annulée"
         }
         display_status = status_tr.get(status, status) if status else "-"
-        
+
         if has_session:
             name = (self.current_session or {}).get("Session_Name") or f"Session #{self.current_session_id}"
-            
+
             scope_type = (self.current_session or {}).get("Scope_Type")
             scope_detail = "Global"
             if scope_type == "LOCATION":
@@ -598,7 +598,7 @@ class InventoryCountTab(QWidget):
                 scope_detail = f"Famille: {(self.current_session or {}).get('Family_Name') or '-'}"
             elif scope_type == "PRODUCT":
                 scope_detail = f"Produit: {(self.current_session or {}).get('Product_Name') or '-'}"
-                
+
             self.session_context_label.setText(f"#{self.current_session_id} - {name} ({scope_detail}) - {display_status}")
         else:
             self.session_context_label.setText("Aucune session")
@@ -632,7 +632,7 @@ class InventoryCountTab(QWidget):
                 "Cancelled": "Annulée"
             }
             display_status = status_tr.get(session.get("Status"), session.get("Status"))
-            
+
             scope_type = session.get("Scope_Type")
             scope_detail = "Global"
             if scope_type == "LOCATION":
@@ -641,7 +641,7 @@ class InventoryCountTab(QWidget):
                 scope_detail = f"Famille: {session.get('Family_Name') or '-'}"
             elif scope_type == "PRODUCT":
                 scope_detail = f"Produit: {session.get('Product_Name') or '-'}"
-            
+
             self._set_row(
                 self.sessions_table,
                 row_index,
@@ -702,7 +702,7 @@ class InventoryCountTab(QWidget):
                 "UNKNOWN": "Inconnu"
             }
             display_line_status = status_line_tr.get(line.get("Line_Status"), line.get("Line_Status"))
-            
+
             self._set_row(
                 self.lines_table,
                 row_index,
@@ -831,68 +831,68 @@ class InventoryCountTab(QWidget):
         row = self.sessions_table.rowAt(position.y())
         if row < 0:
             return
-        
+
         self.sessions_table.selectRow(row)
         session_id = self._selected_session_id()
         if not session_id:
             return
 
         status = (self.current_session or {}).get("Status")
-        
+
         menu = QMenu(self)
-        
+
         if status == "Counting":
             action_review = menu.addAction("✅ Marquer comme terminée")
             action_review.triggered.connect(self.mark_review)
-            
+
         if status in {"Counting", "Review"}:
             if self.has_action("act_inventory_apply"):
                 action_apply = menu.addAction("📦 Appliquer l'inventaire")
                 action_apply.triggered.connect(self.apply_session)
-            
+
         menu.addSeparator()
-        
+
         action_delete = menu.addAction("🗑️ Supprimer la session")
         action_delete.triggered.connect(lambda: self.delete_session(session_id))
-        
+
         menu.exec(self.sessions_table.viewport().mapToGlobal(position))
 
     def show_line_context_menu(self, position):
         row = self.lines_table.rowAt(position.y())
         if row < 0:
             return
-            
+
         self.lines_table.selectRow(row)
-        
+
         status = (self.current_session or {}).get("Status")
         if status not in {"Counting", "Review"}:
             return
-            
+
         first_item = self.lines_table.item(row, 0)
         if not first_item:
             return
-            
+
         line_id = first_item.data(Qt.UserRole)
         if not line_id:
             return
-            
+
         menu = QMenu(self)
         action_edit = menu.addAction("✏️ Corriger la quantité comptée")
         action_edit.triggered.connect(lambda: self.edit_line_quantity(line_id, row))
-        
+
         menu.exec(self.lines_table.viewport().mapToGlobal(position))
 
     def edit_line_quantity(self, line_id, row):
         manager = self._manager()
         if not manager:
             return
-            
+
         current_qty_str = self.lines_table.item(row, 6).text()
         try:
             current_qty = float(current_qty_str.replace(" ", ""))
         except ValueError:
             current_qty = 0.0
-            
+
         new_qty, ok = QInputDialog.getDouble(
             self,
             "Corriger la quantité",
@@ -902,7 +902,7 @@ class InventoryCountTab(QWidget):
             999999,
             2
         )
-        
+
         if ok:
             result = manager.set_counted_quantity(line_id, new_qty)
             if result and isinstance(result, dict) and result.get("success"):
@@ -915,15 +915,15 @@ class InventoryCountTab(QWidget):
         manager = self._manager()
         if not manager:
             return
-            
+
         reply = QMessageBox.question(
-            self, 
-            "Confirmer la suppression", 
+            self,
+            "Confirmer la suppression",
             f"Voulez-vous vraiment supprimer la session d'inventaire #{session_id} ?\n\nCette action nettoiera les données de la session de l'interface, mais n'affectera pas les mouvements de stock validés.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
+
         if reply == QMessageBox.Yes:
             if manager.delete_session(session_id):
                 QMessageBox.information(self, "Succès", "La session a été supprimée avec succès.")
@@ -974,13 +974,13 @@ class InventoryCountTab(QWidget):
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Inventaire")
             msg_box.setText(f"Il y a {uncounted_qty} produits non comptés. Que voulez-vous faire ?")
-            
+
             btn_ignore = msg_box.addButton("Ignorer (Garder le stock)", QMessageBox.ActionRole)
             btn_zero = msg_box.addButton("Mettre à zéro", QMessageBox.DestructiveRole)
             btn_cancel = msg_box.addButton("Annuler", QMessageBox.RejectRole)
-            
+
             msg_box.exec()
-            
+
             if msg_box.clickedButton() == btn_cancel:
                 return
             elif msg_box.clickedButton() == btn_zero:
@@ -995,8 +995,8 @@ class InventoryCountTab(QWidget):
             return
 
         result = manager.apply_session(
-            self.current_session_id, 
-            self._user_id(), 
+            self.current_session_id,
+            self._user_id(),
             allow_unknown=allow_unknown,
             uncounted_action=uncounted_action
         )
