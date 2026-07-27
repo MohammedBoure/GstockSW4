@@ -63,6 +63,7 @@ def apply_filters_local(self):
         family_id    = self.combo_family.currentData()
         manuf_id     = self.combo_manuf.currentData()
         automate_id  = self.combo_automate.currentData()
+        supplier_id  = getattr(self, 'combo_supplier', None) and self.combo_supplier.currentData()
         status_idx   = self.combo_status.currentIndex()
 
         use_exp_date  = self.chk_date_filter.isChecked()
@@ -104,6 +105,7 @@ def apply_filters_local(self):
             if family_id   and row.get('Family_ID')              != family_id:   continue
             if manuf_id    and row.get('Manuf_ID')               != manuf_id:    continue
             if automate_id and row.get('Preferred_Automate_ID')  != automate_id: continue
+            if supplier_id and row.get('Supplier_ID')            != supplier_id: continue
 
             # --- فلتر الحالة المتقدمة (Seuil / Périmés / Bientôt Exp.) ---
             min_threshold = float(row.get('Minimum_Stock_Level') or 5)

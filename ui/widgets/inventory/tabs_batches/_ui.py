@@ -98,6 +98,12 @@ def _build_left_filters(self):
     self.populate_automates()
     self.combo_automate.currentIndexChanged.connect(self.apply_filters_local)
 
+    self.combo_supplier = QComboBox()
+    self.combo_supplier.addItem("🚚 Fournisseurs", None)
+    self.combo_supplier.setFixedWidth(130)
+    self.populate_suppliers()
+    self.combo_supplier.currentIndexChanged.connect(self.apply_filters_local)
+
     self.combo_status = QComboBox()
     self.combo_status.addItems([
         "📋 Tous (>0)", "✅ En Stock", "⚠️ Faible (Seuil)",
@@ -110,6 +116,7 @@ def _build_left_filters(self):
     row2.addWidget(self.combo_family)
     row2.addWidget(self.combo_manuf)
     row2.addWidget(self.combo_automate)
+    row2.addWidget(self.combo_supplier)
     row2.addWidget(self.combo_status)
     left_layout.addLayout(row2)
 
@@ -209,6 +216,7 @@ def _build_table(self):
     self.table = QTableWidget()
     self.table.verticalHeader().setDefaultSectionSize(30)
     self.table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+    self.table.verticalHeader().setLayoutDirection(Qt.RightToLeft)
 
     cols = [
         "Désignation Produit", "Famille", "Marque", "Automate",
@@ -241,6 +249,7 @@ def _build_table(self):
     header.sectionClicked.connect(self.on_header_clicked)
 
     self.table.verticalScrollBar().valueChanged.connect(self.on_scroll_value_changed)
+    self.table.verticalHeader().sectionClicked.connect(self.on_vertical_header_clicked)
 
     return self.table
 
@@ -281,6 +290,8 @@ def _build_bottom_bar(self):
         b.clicked.connect(slot)
         return b
 
+    bottom_bar.addWidget(_btn("➕ Ajout Rapide", "#8e44ad", self.open_quick_add))
+    bottom_bar.addWidget(_btn("📝 Éditer",       "#3498db", self.open_quick_edit))
     bottom_bar.addWidget(_btn("⚡ Sortie",      "#27ae60", self.direct_use_process))
     bottom_bar.addWidget(_btn("✏️ Ajustement",  "#f39c12", self.adjust_stock))
     bottom_bar.addWidget(_btn("🗑️ Rebut",       "#c0392b", self.waste_batch))

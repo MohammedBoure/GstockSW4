@@ -24,6 +24,15 @@ try:
 except ImportError:
     HAS_REPORTLAB = False
 
+from ui.widgets.settings.pdf.pdf_stamp import (
+    FOOTER_TITLE_HEIGHT_CM,
+    fit_stamp_size_cm,
+    get_active_stamp,
+    SignatureFooter,
+    draw_stamp_image,
+)
+from ui.widgets.settings.local_settings import get_local_settings_store
+
 class InvoicesListWidget(QWidget):
     """
     Interface for the list of invoices/delivery notes.
@@ -331,18 +340,8 @@ class InvoicesListWidget(QWidget):
 
         # 1. تحديد المسارات وتحميل الإعدادات
         try:
-            settings = self.manager.company_settings.get_settings()
-
-            # دمج الإعدادات المحلية (التي تحتوي على معلومات المخبر lab_name, lab_nif الخ)
-            import json, os
-            if os.path.exists("config.json"):
-                with open("config.json", "r", encoding="utf-8") as f:
-                    local_settings = json.load(f)
-                    # التحديث لا يمسح إعدادات قاعدة البيانات بل يضيف إليها معلومات المخبر
-                    for k, v in local_settings.items():
-                        if k not in settings or not settings[k]:
-                            settings[k] = v
-
+            local_store = get_local_settings_store(self.manager)
+            settings = local_store.load_merged_pdf_settings()
         except Exception as e:
             QMessageBox.critical(self, "Erreur", f"Configuration error: {str(e)}")
             return
@@ -485,7 +484,7 @@ class InvoicesListWidget(QWidget):
                 y_offset = settings.get('banner_img_y_cm', 0.2) * cm
                 img_y = PAGE_HEIGHT - img_h - y_offset
 
-                img_bytes = self.manager.company_settings.get_banner_image()
+                img_bytes = local_store.load_banner_bytes(settings)
                 if img_bytes:
                     from reportlab.lib.utils import ImageReader
                     import io
@@ -579,28 +578,26 @@ class InvoicesListWidget(QWidget):
             footer_height = settings.get('footer_height_cm', 2.5)
             left_x = settings.get('footer_left_x_cm', 1.0)
             right_x = settings.get('footer_right_x_cm', 12.0)
+            stamp_gap = float(settings.get('footer_stamp_gap_cm', 0.3))
+            stamp_area_w = float(settings.get('footer_stamp_area_w_cm', 6.0))
+            stamp_area_h = float(settings.get('footer_stamp_area_h_cm', 3.5))
+            footer_height = max(
+                float(footer_height),
+                FOOTER_TITLE_HEIGHT_CM + stamp_gap + stamp_area_h,
+            )
+            active_stamp = get_active_stamp(local_store)
 
-            from reportlab.platypus import Flowable
-            class SignatureFooter(Flowable):
-                def __init__(self, t_left, t_right, x_l, x_r, h):
-                    Flowable.__init__(self)
-                    self.t_left = t_left
-                    self.t_right = t_right
-                    self.x_l = x_l * cm
-                    self.x_r = x_r * cm
-                    self.h = h * cm
-
-                def wrap(self, availW, availH):
-                    return availW, self.h
-
-                def draw(self):
-                    self.canv.saveState()
-                    self.canv.setFont("Helvetica-Bold", 10)
-                    self.canv.drawString(self.x_l, self.h - 15, self.t_left)
-                    self.canv.drawString(self.x_r, self.h - 15, self.t_right)
-                    self.canv.restoreState()
-
-            footer = SignatureFooter(f_left, f_right, left_x, right_x, footer_height)
+            footer = SignatureFooter(
+                f_left,
+                f_right,
+                left_x,
+                right_x,
+                footer_height,
+                active_stamp,
+                stamp_gap,
+                stamp_area_w,
+                stamp_area_h,
+            )
             elements.append(footer)
 
             doc.build(elements, onFirstPage=draw_header_compact, onLaterPages=draw_header_compact)

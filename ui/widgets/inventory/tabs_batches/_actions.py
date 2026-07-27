@@ -95,6 +95,40 @@ def _to_date(val):
 # إجراءات الجدول الرئيسية
 # ---------------------------------------------------------------------------
 
+def on_vertical_header_clicked(self, logicalIndex):
+    """معالجة النقر على الهيدر العمودي (رقم الصف) لفتح تعديل الشكوى"""
+    try:
+        item = self.table.item(logicalIndex, 0)
+        if item:
+            batch_data = item.data(Qt.UserRole)
+            if batch_data:
+                self.edit_reclamation(batch_data)
+    except Exception as e:
+        logging.error(f"Error handling vertical header click: {e}")
+
+def edit_reclamation(self, batch_data):
+    """تعديل ملاحظة/شكوى الاستلام (Réclamation) للوط"""
+    raw_note = batch_data.get('Reception_Note')
+    current_note = str(raw_note).strip() if raw_note is not None else ""
+    if current_note.lower() == "none":
+        current_note = ""
+
+    new_note, ok = QInputDialog.getMultiLineText(
+        self,
+        "Modifier la Réclamation",
+        "Texte de la réclamation (laissez vide pour supprimer):",
+        current_note
+    )
+    if ok:
+        new_note = new_note.strip()
+        batch_id = batch_data.get('Batch_ID')
+        if self.manager.batches.update_batch_reception_note(batch_id, new_note):
+            self.load_data()
+            self.data_changed.emit()
+            QMessageBox.information(self, "Succès", "La réclamation a été mise à jour.")
+        else:
+            QMessageBox.warning(self, "Erreur", "Impossible de mettre à jour la réclamation.")
+
 def direct_use_process(self):
     """سحب مباشر من اللوط المحدد"""
     row_idx = self.table.currentRow()
@@ -359,3 +393,63 @@ def handle_barcode_scan(self):
         self.table.selectRow(found_rows[0])
         self.table.scrollToItem(self.table.item(found_rows[0], 0))
         self.search_input.selectAll()
+
+def open_quick_add(self):
+    """فتح نافذة الإضافة السريعة وتنفيذ الإضافة"""
+    from .quick_add_dialog import QuickAddDialog
+    dialog = QuickAddDialog(self.manager, self)
+
+    if dialog.exec():
+        data = dialog.get_data()
+        success = self.manager.batches.add_direct_batch(
+            data,
+            user_id=get_current_user_id(self)
+        )
+
+        if success:
+            if data.get('Print_Label') and data.get('Generated_Barcode'):
+                self.manager.printer.print_label(
+                    data['Product_Name'],
+                    data['Generated_Barcode'],
+                    data['Lot_Number'],
+                    str(data['Expiry_Date']),
+                    data['Quantity']
+                )
+            self.load_data()
+            self.data_changed.emit()
+        else:
+            QMessageBox.critical(self, "Erreur", "Échec de l'ajout rapide du stock.")
+
+def open_quick_edit(self):
+    """يفتح نافذة التعديل السريع للحصة المحددة (إذا لم تكن من إيصال استلام رسمي)"""
+    from PySide6.QtWidgets import QMessageBox
+    from PySide6.QtCore import Qt
+
+    selected_rows = set(item.row() for item in self.table.selectedItems())
+    if not selected_rows or len(selected_rows) != 1:
+        QMessageBox.warning(self, "Sélection", "Veuillez sélectionner un (1) seul lot à modifier.")
+        return
+
+    row = list(selected_rows)[0]
+    batch_data = self.table.item(row, 0).data(Qt.UserRole)
+
+    if batch_data.get('BR_ID') is not None:
+        QMessageBox.warning(self, "Action non permise", "Ce lot appartient à un Bon de Réception.\nVeuillez le modifier depuis l'historique des réceptions.")
+        return
+
+    from .quick_add_dialog import QuickAddDialog
+    dialog = QuickAddDialog(self.manager, self, batch_data=batch_data)
+
+    if dialog.exec():
+        data = dialog.get_data()
+        success = self.manager.batches.update_direct_batch(
+            batch_data['Batch_ID'],
+            data,
+            user_id=get_current_user_id(self)
+        )
+
+        if success:
+            self.load_data()
+            self.data_changed.emit()
+        else:
+            QMessageBox.critical(self, "Erreur", "Échec de la modification du stock.")

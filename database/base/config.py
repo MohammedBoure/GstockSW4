@@ -21,7 +21,7 @@ except (AttributeError, TypeError):
 logger = logging.getLogger("MODERNLAM")
 
 TABLE_IMPORT_ORDER = [
-    'Users', 'Company_Settings', 'Location_Types', 'Product_Families', 'Packaging_Units',
+    'Users', 'Company_Settings', 'Company_Stamps', 'Location_Types', 'Product_Families', 'Packaging_Units',
     'Manufacturers', 'Suppliers', 'External_Partners', 'Locations', 'Automates', 'Waste_Reasons',
     'Products_Master', 'Product_Documents', 'Purchase_Orders', 'PO_Details',
     'Reception_Log', 'Reception_Details', 'Inventory_Batches',
@@ -29,7 +29,7 @@ TABLE_IMPORT_ORDER = [
     'Active_Containers', 'External_Transfer_Log', 'External_Transfer_Details',
     'Clients', 'POS_Terminals', 'POS_Cash_Sessions', 'Sales_Invoice_Sequences', 'Sales_Invoices', 'Sales_Details', 'Client_Payments',
     'Client_Credit_Notes', 'Client_Credit_Note_Details', 'Stock_Movement_Log',
-    'Supplier_Credit_Notes', 'Credit_Note_Details', 'Supplier_Payments', 'SystemLogs' # <-- تمت الإضافة هنا
+    'Supplier_Credit_Notes', 'Credit_Note_Details', 'Supplier_Payments', 'Print_Templates', 'SystemLogs' # <-- تمت الإضافة هنا
 ]
 
 ARCHIVE_VIEW_FLAG_FILE = 'archive_view.flag'
