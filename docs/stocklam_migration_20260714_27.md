@@ -8,7 +8,7 @@ Date: 2026-07-27
 - Source migration range: `591aa10..0b458cd`, 19 commits from 2026-07-16 through 2026-07-27.
 - Target repository: `D:\git\GstockSW4`, `main`.
 - The verified prior migration baseline `migration/stocklam-20260714-15` at `b9b6af3` was merged into target main with merge commit `d3d9cba`; target commit `d4544ff` remained in the merge history.
-- Final target SHA: `1f93525`, pushed to `origin/main`.
+- Implementation SHA: `1f93525`; verification record initially committed at `131cd1d` and finalized in the current branch.
 
 The migration was semantic. Target-specific sales, cashier, receipt, barcode, PDF, configuration, and runtime behavior were retained. Source cleanup deletions were not replayed, including deletion candidates such as `config.json`, `pdf_settings.json`, `index.html`, `fix.py`, `fix2.py`, POS/receipt/barcode editors, and `user_session.json`.
 
