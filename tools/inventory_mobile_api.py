@@ -29,6 +29,9 @@ DISCOVERY_PORT = 8788
 DISCOVERY_REQUEST = b"STOCKLAM_DISCOVER_V1"
 import sys
 
+class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -70,6 +73,9 @@ def _clean_line(line: dict | None) -> dict | None:
 
 class InventoryMobileApi(BaseHTTPRequestHandler):
     server_version = "StockLamInventoryMobile/1.0"
+
+    def log_message(self, format, *args):
+        logging.info("mobile-api %s", format % args)
 
     def _manager(self):
         return self.server.data_manager.inventory_counts  # type: ignore[attr-defined]
@@ -295,7 +301,7 @@ def build_server(host: str, port: int, data_manager=None, remote_scan_callback=N
         db = Database()
         data_manager = LabDataManager(db)
     default_name, default_id = _device_identity()
-    server = ThreadingHTTPServer((host, port), InventoryMobileApi)
+    server = ReusableThreadingHTTPServer((host, port), InventoryMobileApi)
     server.data_manager = data_manager  # type: ignore[attr-defined]
     server.remote_scan_callback = remote_scan_callback  # type: ignore[attr-defined]
     server.device_name = device_name or default_name  # type: ignore[attr-defined]
