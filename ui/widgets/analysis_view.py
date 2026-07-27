@@ -283,13 +283,10 @@ class AnalysisView(QWidget):
         self.tab_valuation = StockValuationTab()
         self.tab_waste = WasteAnalysisTab()
         self.tab_consumption = FullConsumptionTab()
-        from ui.widgets.ai_analytics_tab import AiAnalyticsTab
-        self.tab_ai = AiAnalyticsTab(db_instance=self.stats.db)
         
         self.tabs.addTab(self.tab_valuation, "💰 Valorisation du Stock")
         self.tabs.addTab(self.tab_waste, "🗑️ Analyse des Pertes (Déchets)")
         self.tabs.addTab(self.tab_consumption, "📉 Rapport Consommation")
-        self.tabs.addTab(self.tab_ai, "🧠 Intelligence Artificielle & Prédictions")
         
         main_layout.addWidget(self.tabs)
         
@@ -309,6 +306,3 @@ class AnalysisView(QWidget):
         
         # 3. تحديث تقرير الاستهلاك (يعتمد على التاريخ)
         self.tab_consumption.refresh(self.stats, d_from_str, d_to_str)
-        # 4. تحديث تحليلات الذكاء الاصطناعي في خيط خلفي
-        self.tab_ai.set_db(self.stats.db)
-        self.tab_ai.refresh_ai_data()
