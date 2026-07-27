@@ -15,7 +15,7 @@ from .widgets.master_data.products_tab import ProductsTab
 from .widgets.dashboard.dashboard_view import DashboardTab
 from .widgets.procurement.procurement_tabs import ProcurementTab
 from .widgets.inventory.inventory_tabs import InventoryTab
-from .widgets.inventory.inventory_count_tab import InventoryCountTab
+from .widgets.inventaire import InventoryCountTab
 from .widgets.master_data.manufacturers_tab import ManufacturersTab
 from .widgets.master_data.locations_tab import LocationsTab
 from .widgets.master_data.automates_tab import AutomatesTab
@@ -106,6 +106,7 @@ class MainWindow(QMainWindow):
                 0: "nav_dashboard",
                 1: "nav_data",
                 2: "nav_procurement",
+                8: "tab_proc_reclamation",
                 3: "nav_inventory",
                 9: "nav_inventaire",
                 6: "nav_services",
@@ -286,6 +287,7 @@ class MainWindow(QMainWindow):
             (1, "Données de Base", "fa5s.layer-group"),
             (2, "Achats & Entrées", "fa5s.shopping-cart"), 
             (3, "Stock & Magasin",  "fa5s.boxes"),
+            (8, "Réclamations", "fa5s.exclamation-circle"),
             (6, "Sous-Traitants",   "fa5s.file-invoice-dollar"), 
             (9, "Inventaire", "fa5s.clipboard-list"),
             (10, "Point de Vente",  "fa5s.cash-register"),
@@ -418,6 +420,7 @@ class MainWindow(QMainWindow):
             0: "nav_dashboard",
             1: "nav_data",
             2: "nav_procurement",
+            8: "tab_proc_reclamation",
             3: "nav_inventory",
             9: "nav_inventaire",
             6: "nav_services",
@@ -535,9 +538,13 @@ class MainWindow(QMainWindow):
                 widget.tabs.addTab(widget.history_tab, "📜 Bons de Réceptions")
             if self.has_permission("tab_proc_credit"):
                 widget.tabs.addTab(widget.credit_tab, "↩️ Avoirs / Retours")
-            if self.has_permission("tab_proc_reclamation"):
-                from ui.icons import get_reclamation_icon
-                widget.tabs.addTab(widget.reclamation_tab, get_reclamation_icon(), " Réclamations")
+
+        # --- 8. Réclamations ---
+        elif page_id == 8:
+            from .widgets.reclamation.reclamation_tab import ReclamationTab
+            widget = ReclamationTab(self.data_manager)
+            if hasattr(widget, "load_data"):
+                widget.load_data()
                 
         elif page_id == 3:
             widget = InventoryTab(self.data_manager)
@@ -618,6 +625,7 @@ class MainWindow(QMainWindow):
             0: "nav_dashboard",
             1: "nav_data",
             2: "nav_procurement",
+            8: "tab_proc_reclamation",
             3: "nav_inventory",
             9: "nav_inventaire",
             6: "nav_services",

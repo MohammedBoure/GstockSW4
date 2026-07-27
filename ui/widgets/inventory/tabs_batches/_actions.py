@@ -96,16 +96,31 @@ def _to_date(val):
 # ---------------------------------------------------------------------------
 
 def on_vertical_header_clicked(self, logicalIndex):
-    """معالجة النقر على الهيدر العمودي (رقم الصف) لفتح تعديل الشكوى"""
+    """فتح reclamation من أيقونة رأس الصف فقط عندما توجد ملاحظة فعلية."""
     try:
         item = self.table.item(logicalIndex, 0)
         if item:
             batch_data = item.data(Qt.UserRole)
             if batch_data:
-                self.edit_reclamation(batch_data)
+                raw_note = batch_data.get('Reception_Note')
+                note = str(raw_note).strip() if raw_note is not None else ""
+                if note and note.lower() not in ("none", "null"):
+                    self.edit_reclamation(batch_data)
     except Exception as e:
         logging.error(f"Error handling vertical header click: {e}")
 
+def on_cell_clicked(self, row, col):
+    """فتح reclamation من خلية الملاحظة الفعلية فقط."""
+    if col != 21:
+        return
+    item = self.table.item(row, 0)
+    if item:
+        batch_data = item.data(Qt.UserRole)
+        if batch_data:
+            raw_note = batch_data.get('Reception_Note')
+            note = str(raw_note).strip() if raw_note is not None else ""
+            if note and note.lower() not in ("none", "null"):
+                self.edit_reclamation(batch_data)
 def edit_reclamation(self, batch_data):
     """تعديل ملاحظة/شكوى الاستلام (Réclamation) للوط"""
     raw_note = batch_data.get('Reception_Note')

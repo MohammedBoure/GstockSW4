@@ -50,7 +50,13 @@ SYSTEM_PERMISSIONS = {
             "nav_procurement": "Accès aux Achats",
             "tab_proc_po": "Bons de Commandes",
             "tab_proc_reception": "Bons de Réceptions",
-            "tab_proc_credit": "Avoirs / Retours",
+            "tab_proc_credit": "Avoirs / Retours"
+        }
+    },
+    "3a. RECLAMATIONS": {
+        "label": "Réclamations & Anomalies",
+        "icon": "fa5s.exclamation-circle",
+        "perms": {
             "tab_proc_reclamation": "Réclamations"
         }
     },

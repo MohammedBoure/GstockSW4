@@ -122,17 +122,17 @@ class MovementHistoryTab(QWidget):
         filter_layout.setSpacing(5)
 
         # إعدادات حقول التاريخ
-        self.date_from = QDateEdit(QDate.currentDate().addDays(-7))
+        self.date_from = QDateEdit(QDate.currentDate().addYears(-1))
         self.date_from.setCalendarPopup(True)
         self.date_from.setDisplayFormat("yyyy-MM-dd")
         self.date_from.setFixedWidth(120)
-        self.date_from.dateChanged.connect(self.apply_filter_local)
+        self.date_from.dateChanged.connect(self.load_data)
 
         self.date_to = QDateEdit(QDate.currentDate())
         self.date_to.setCalendarPopup(True)
         self.date_to.setDisplayFormat("yyyy-MM-dd")
         self.date_to.setFixedWidth(120)
-        self.date_to.dateChanged.connect(self.apply_filter_local)
+        self.date_to.dateChanged.connect(self.load_data)
 
         self.combo_type = QComboBox()
         self.combo_type.addItems([
@@ -174,7 +174,7 @@ class MovementHistoryTab(QWidget):
 
         self.search_input = BarcodeLineEdit()
         self.search_input.setPlaceholderText("🔍 Barcode, Produit, Lot...")
-        self.search_input.textChanged.connect(self.apply_filter_local)
+        self.search_input.textChanged.connect(self.load_data)
 
         btn_refresh = QPushButton()
         btn_refresh.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
@@ -229,8 +229,18 @@ class MovementHistoryTab(QWidget):
     def load_data(self):
         try:
             m_type = self.combo_type.currentData()
-            self.raw_data = self.manager.movement.get_movements_log(limit=500, movement_type=m_type)
-            self.apply_filter_local()
+            d_from = self.date_from.date().toString("yyyy-MM-dd")
+            d_to = self.date_to.date().toString("yyyy-MM-dd")
+            txt = self.search_input.text().strip()
+            self.raw_data = self.manager.movement.get_movements_log(
+                limit=500,
+                offset=0,
+                movement_type=m_type,
+                start_date=d_from,
+                end_date=d_to,
+                search_text=txt or None,
+            )
+            self._populate_table(self.raw_data)
         except Exception as e:
             logging.error(f"Error loading history data: {e}")
 

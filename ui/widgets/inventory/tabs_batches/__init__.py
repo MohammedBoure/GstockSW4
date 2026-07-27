@@ -39,7 +39,7 @@ from ._actions      import (
     show_batch_details, open_quick_transfer, open_quick_consume,
     go_to_history, open_history_via_barcode, go_to_reception,
     handle_barcode_scan, open_quick_add, open_quick_edit,
-    edit_reclamation, on_vertical_header_clicked,
+    edit_reclamation, on_vertical_header_clicked, on_cell_clicked,
 )
 from ._export       import (
     print_batch_label, export_to_excel, export_to_pdf, get_table_data,
@@ -132,6 +132,7 @@ class BatchesTab(QWidget):
     open_quick_edit         = open_quick_edit
     edit_reclamation        = edit_reclamation
     on_vertical_header_clicked = on_vertical_header_clicked
+    on_cell_clicked         = on_cell_clicked
 
     # التصدير
     print_batch_label = print_batch_label

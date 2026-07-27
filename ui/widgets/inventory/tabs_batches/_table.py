@@ -160,7 +160,7 @@ def _fill_row(table, r, b, hide_fin):
     qty = float(b.get('Quantity_Current', 0))
     raw_reclamation = b.get('Reception_Note')
     reclamation = str(raw_reclamation).strip() if raw_reclamation is not None else ""
-    if reclamation.lower() == "none":
+    if reclamation.lower() in ("none", "null"):
         reclamation = ""
     bg_color = "#ffe4cd" if reclamation else None
 
@@ -227,6 +227,7 @@ def _fill_row(table, r, b, hide_fin):
     v_header_item = QTableWidgetItem(str(r + 1))
     if reclamation:
         v_header_item.setIcon(get_reclamation_icon())
+        v_header_item.setToolTip(f"Réclamation: {reclamation}")
     v_header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     table.setVerticalHeaderItem(r, v_header_item)
 # ---------------------------------------------------------------------------
