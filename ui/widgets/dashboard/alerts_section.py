@@ -5,6 +5,13 @@ from PySide6.QtWidgets import (QFrame, QVBoxLayout, QTableWidget, QTableWidgetIt
 from PySide6.QtGui import QColor, QFont, QBrush, QIcon, QCursor
 from PySide6.QtCore import Qt
 
+def is_stock_alert(alert_data):
+    """Return True when an alert represents a low-stock condition."""
+    return (
+        isinstance(alert_data, dict)
+        and "stock" in str(alert_data.get("Type", "")).lower()
+    )
+
 # =====================================================================
 # 1. نافذة التفاصيل المنبثقة (Dialog)
 # =====================================================================
@@ -77,7 +84,6 @@ class AlertsSection(QFrame):
     def __init__(self, data_manager=None):
         super().__init__()
         self.all_data = [] 
-        self.active_filter = "All"
         self.init_ui()
 
     def init_ui(self):
@@ -96,28 +102,6 @@ class AlertsSection(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
-
-        # --- أزرار الفلاتر ---
-        type_layout = QHBoxLayout()
-        self.btn_group = QButtonGroup(self)
-        self.btn_all = QPushButton("Tout")
-        self.btn_urgent = QPushButton("Urgents 🚨"); self.btn_urgent.setObjectName("btn_urgent")
-        self.btn_anticip = QPushButton("Anticipés ⏳"); self.btn_anticip.setObjectName("btn_anticip")
-        self.btn_stock = QPushButton("Stocks 📦")
-
-        for i, btn in enumerate([self.btn_all, self.btn_urgent, self.btn_anticip, self.btn_stock]):
-            btn.setCheckable(True)
-            self.btn_group.addButton(btn, i)
-        self.btn_all.setChecked(True)
-        self.btn_group.idClicked.connect(self.on_filter_clicked)
-        
-        type_layout.addWidget(self.btn_all)
-        type_layout.addWidget(self.btn_urgent)
-        type_layout.addWidget(self.btn_anticip)
-        type_layout.addWidget(self.btn_stock)
-        type_layout.addStretch()
-        layout.addLayout(type_layout)
-
         # --- فلاتر البحث المتقدم ---
         filters_layout = QHBoxLayout()
         self.search_box = QLineEdit()
@@ -232,13 +216,11 @@ class AlertsSection(QFrame):
 
     def update_alerts(self, alerts_data):
         """يتم استدعاؤها من المكون الأب عند جلب البيانات الجديدة"""
-        self.all_data = alerts_data
+        self.all_data = [
+            alert for alert in (alerts_data or [])
+            if is_stock_alert(alert)
+        ]
         self.update_filters_lists()
-        self.refresh_table_view()
-
-    def on_filter_clicked(self, btn_id):
-        mapping = {0: "All", 1: "Urgente", 2: "Anticipée", 3: "Stock"}
-        self.active_filter = mapping.get(btn_id, "All")
         self.refresh_table_view()
 
     def refresh_table_view(self):
@@ -251,7 +233,6 @@ class AlertsSection(QFrame):
         
         filtered = []
         for a in self.all_data:
-            if self.active_filter != "All" and self.active_filter not in a['Type']: continue
             if txt and txt not in a['Product'].lower(): continue
             if fam != "Toutes Familles" and a.get('Family') != fam: continue
 
@@ -266,7 +247,6 @@ class AlertsSection(QFrame):
         for row, a in enumerate(filtered):
             self.table.insertRow(row)
             
-            type_str = a['Type']
             total_qty = a.get('TotalQty', 0)
             
             p_item = QTableWidgetItem(a['Product'])
@@ -284,18 +264,8 @@ class AlertsSection(QFrame):
 
             math_explanation = self.generate_math_explanation(a)
             
-            text_color = QColor("#2c3e50")
-            bg_color = QColor(Qt.white)
-
-            if "Urgente" in type_str:
-                text_color = QColor("#c0392b")
-                bg_color = QColor("#fdedec")
-            elif "Anticipée" in type_str:
-                text_color = QColor("#d35400")
-                bg_color = QColor("#fff5e6")
-            elif "Stock" in type_str:
-                text_color = QColor("#c2185b")
-                bg_color = QColor("#fce4ec")
+            text_color = QColor("#c2185b")
+            bg_color = QColor("#fce4ec")
 
             for item in [p_item, fam_item, marq_item, v_item]:
                 item.setForeground(QBrush(text_color))

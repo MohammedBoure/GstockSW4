@@ -250,6 +250,7 @@ def _build_table(self):
 
     self.table.verticalScrollBar().valueChanged.connect(self.on_scroll_value_changed)
     self.table.verticalHeader().sectionClicked.connect(self.on_vertical_header_clicked)
+    self.table.cellClicked.connect(self.on_cell_clicked)
 
     return self.table
 
@@ -271,6 +272,16 @@ def _build_bottom_bar(self):
         }
     """)
     bottom_bar.addWidget(self.lbl_total_value)
+
+    self.lbl_total_quantity = QLabel("Stock disponible affiché : 0")
+    self.lbl_total_quantity.setFont(QFont("Arial", 11, QFont.Bold))
+    self.lbl_total_quantity.setStyleSheet("""
+        QLabel {
+            color: #1e8449; border: 1px solid #82e0aa; border-radius: 4px;
+            padding: 6px; background-color: #eafaf1;
+        }
+    """)
+    bottom_bar.addWidget(self.lbl_total_quantity)
 
     self.lbl_count_info = QLabel("0 éléments")
     self.lbl_count_info.setStyleSheet(
