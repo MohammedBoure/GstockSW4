@@ -11,6 +11,7 @@ import logging
 import uuid
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
+from .stock_movement_log_manager import StockMovementLogManager
 
 import mysql.connector
 
@@ -28,6 +29,7 @@ class POSFeatureManager:
 
     def __init__(self, db_instance):
         self.db = db_instance
+        self.stock_movement_log = StockMovementLogManager(db_instance)
         self.ensure_schema()
 
     def ensure_schema(self):
@@ -204,6 +206,11 @@ class POSFeatureManager:
             "ALTER TABLE POS_Cash_Sessions ADD COLUMN Counted_Versement DECIMAL(15, 2) NULL;",
             "ALTER TABLE POS_Cash_Sessions ADD COLUMN Counted_Other DECIMAL(15, 2) NULL;",
             "ALTER TABLE POS_Cash_Sessions ADD COLUMN Counted_Credit DECIMAL(15, 2) NULL;",
+            "ALTER TABLE POS_Cash_Sessions ADD COLUMN Card_Difference DECIMAL(15, 2) NULL;",
+            "ALTER TABLE POS_Cash_Sessions ADD COLUMN Transfer_Difference DECIMAL(15, 2) NULL;",
+            "ALTER TABLE POS_Cash_Sessions ADD COLUMN Versement_Difference DECIMAL(15, 2) NULL;",
+            "ALTER TABLE POS_Cash_Sessions ADD COLUMN Other_Difference DECIMAL(15, 2) NULL;",
+            "ALTER TABLE POS_Cash_Sessions ADD COLUMN Credit_Difference DECIMAL(15, 2) NULL;"
         ]
         try:
             with self.db.get_db_connection() as conn:
@@ -358,6 +365,46 @@ class POSFeatureManager:
             logging.error("Could not load POS payments: %s", exc, exc_info=True)
             return []
 
+    @staticmethod
+    def validate_credit_limit(cursor, client_id, credit_amount):
+        amount = money(credit_amount)
+        if amount <= 0:
+            return True, {"Credit_Limit": Decimal("0.00"), "Credit_Balance": Decimal("0.00")}
+        if not client_id:
+            return False, {"message": "Le crédit nécessite un client."}
+        cursor.execute("SELECT Credit_Limit FROM Clients WHERE Client_ID = %s FOR UPDATE", (client_id,))
+        client = cursor.fetchone() or {}
+        limit = money(client.get("Credit_Limit"))
+        if limit <= 0:
+            return True, {"Credit_Limit": limit, "Credit_Balance": Decimal("0.00"), "Available_Credit": None}
+        cursor.execute(
+            """
+            SELECT COALESCE(SUM(p.Amount), 0) AS Credit_Sales
+            FROM POS_Sale_Payments p
+            JOIN Sales_Invoices i ON i.Invoice_ID = p.Invoice_ID
+            WHERE i.Client_ID = %s
+              AND i.Status IN ('Validated', 'Paid')
+              AND p.Payment_Method = 'Credit'
+            """,
+            (client_id,),
+        )
+        credit_sales = money((cursor.fetchone() or {}).get("Credit_Sales"))
+        cursor.execute("SELECT COALESCE(SUM(Amount), 0) AS Settled FROM Client_Payments WHERE Client_ID = %s", (client_id,))
+        settled = money((cursor.fetchone() or {}).get("Settled"))
+        balance = max(Decimal("0.00"), credit_sales - settled)
+        available = max(Decimal("0.00"), limit - balance)
+        if balance + amount > limit:
+            return False, {
+                "message": f"Limite de crédit dépassée. Disponible: {available:.2f} DA.",
+                "Credit_Limit": limit,
+                "Credit_Balance": balance,
+                "Available_Credit": available,
+            }
+        return True, {
+            "Credit_Limit": limit,
+            "Credit_Balance": balance,
+            "Available_Credit": available,
+        }
     def get_client_credit_summary(self, client_id):
         try:
             with self.db.get_db_connection() as conn:
@@ -527,6 +574,247 @@ class POSFeatureManager:
         except Exception as exc:
             logging.error("Could not write POS audit event: %s", exc, exc_info=True)
 
+    def create_sale_return(self, original_invoice_id, return_items, return_type="Return", refund_method=None, reason=None, user_id=None):
+        """Validate a partial/full return and restore its original stock atomically."""
+        if not original_invoice_id or not return_items:
+            return False, {"message": "La facture et les lignes du retour sont obligatoires."}
+        if return_type not in {"Return", "Exchange"}:
+            return_type = "Return"
+        if refund_method and refund_method not in PAYMENT_METHODS:
+            return False, {"message": "Moyen de remboursement invalide."}
+
+        conn = None
+        try:
+            conn = self.db.get_raw_connection()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT * FROM Sales_Invoices WHERE Invoice_ID = %s FOR UPDATE",
+                (original_invoice_id,),
+            )
+            invoice = cursor.fetchone()
+            if not invoice or invoice.get("Status") == "Cancelled":
+                conn.rollback()
+                return False, {"message": "Facture d'origine introuvable ou annulée."}
+
+            return_no = f"RET-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
+            cursor.execute(
+                """
+                INSERT INTO POS_Sale_Returns
+                    (Return_No, Original_Invoice_ID, Client_ID, Return_Date,
+                     Return_Type, Status, Refund_Method, Reason, Created_By)
+                VALUES (%s, %s, %s, %s, %s, 'Validated', %s, %s, %s)
+                """,
+                (
+                    return_no, original_invoice_id, invoice.get("Client_ID"), date.today(),
+                    return_type, refund_method, reason, user_id,
+                ),
+            )
+            return_id = cursor.lastrowid
+            refund_amount = Decimal("0.00")
+
+            for raw in return_items:
+                detail_id = int(raw.get("original_detail_id") or raw.get("Detail_ID"))
+                qty = Decimal(str(raw.get("qty_returned") or raw.get("Qty_Returned") or 0))
+                if qty <= 0:
+                    raise ValueError("Quantité de retour invalide.")
+                cursor.execute(
+                    """
+                    SELECT sd.*, b.Quantity_Current, b.Status AS Batch_Status, p.Stock_Unit
+                    FROM Sales_Details sd
+                    JOIN Inventory_Batches b ON b.Batch_ID = sd.Batch_ID
+                    JOIN Products_Master p ON p.Product_ID = sd.Product_ID
+                    WHERE sd.Detail_ID = %s AND sd.Invoice_ID = %s
+                    FOR UPDATE
+                    """,
+                    (detail_id, original_invoice_id),
+                )
+                detail = cursor.fetchone()
+                if not detail:
+                    raise ValueError(f"Ligne de vente introuvable: {detail_id}")
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(rd.Qty_Returned), 0) AS Already_Returned
+                    FROM POS_Sale_Return_Details rd
+                    JOIN POS_Sale_Returns rh ON rh.Return_ID = rd.Return_ID
+                    WHERE rd.Original_Detail_ID = %s AND rh.Status = 'Validated'
+                    """,
+                    (detail_id,),
+                )
+                already_returned = Decimal(str((cursor.fetchone() or {}).get("Already_Returned") or 0))
+                sold_qty = Decimal(str(detail.get("Qty_Sold") or 0))
+                if qty > sold_qty - already_returned:
+                    raise ValueError(
+                        f"Quantité retournée supérieure au disponible pour la ligne {detail_id}."
+                    )
+
+                unit_price = Decimal(str(detail.get("Unit_Price_HT") or 0))
+                discount = Decimal(str(detail.get("Discount_Percent") or 0))
+                tva = Decimal(str(detail.get("TVA_Percent") or 0))
+                line_ht = (qty * unit_price * (Decimal("1") - discount / Decimal("100"))).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+                line_ttc = (line_ht * (Decimal("1") + tva / Decimal("100"))).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+                refund_amount += line_ttc
+
+                cursor.execute(
+                    """
+                    INSERT INTO POS_Sale_Return_Details
+                        (Return_ID, Original_Detail_ID, Product_ID, Batch_ID,
+                         Qty_Returned, Unit_Price_HT, TVA_Percent, Line_Total_HT, Line_Total_TTC)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        return_id, detail_id, detail["Product_ID"], detail["Batch_ID"],
+                        qty, unit_price, tva, line_ht, line_ttc,
+                    ),
+                )
+                current_qty = Decimal(str(detail.get("Quantity_Current") or 0))
+                new_qty = current_qty + qty
+                cursor.execute(
+                    """
+                    UPDATE Inventory_Batches
+                    SET Quantity_Current = %s,
+                        Status = CASE WHEN %s > 0 THEN 'Available' ELSE Status END
+                    WHERE Batch_ID = %s
+                    """,
+                    (new_qty, new_qty, detail["Batch_ID"]),
+                )
+                movement_id = self.stock_movement_log.create_movement_log(
+                    product_id=detail["Product_ID"],
+                    movement_type="Sale_Return",
+                    qty_change=qty,
+                    unit_used=detail.get("Stock_Unit") or "Unit",
+                    batch_id=detail["Batch_ID"],
+                    user_id=user_id,
+                    notes=f"Retour {return_no}",
+                    external_cursor=cursor,
+                )
+                if not movement_id:
+                    raise ValueError("Échec de journalisation du retour de stock.")
+
+            cursor.execute(
+                "UPDATE POS_Sale_Returns SET Refund_Amount = %s, Updated_At = NOW() WHERE Return_ID = %s",
+                (refund_amount, return_id),
+            )
+            if refund_method == "Cash" and invoice.get("Cash_Session_ID") and refund_amount > 0:
+                cursor.execute(
+                    """
+                    INSERT INTO POS_Cash_Movements
+                        (Cash_Session_ID, Movement_Type, Amount, Reason, Reference, Created_By)
+                    VALUES (%s, 'Refund', %s, %s, %s, %s)
+                    """,
+                    (invoice["Cash_Session_ID"], refund_amount, reason or "Retour de vente", return_no, user_id),
+                )
+            self.audit(
+                "POS_Sale_Return", return_id, "Validated",
+                {"invoice_id": original_invoice_id, "refund": str(refund_amount), "type": return_type},
+                user_id, cursor=cursor,
+            )
+            conn.commit()
+            return True, {
+                "return_id": return_id,
+                "return_no": return_no,
+                "refund_amount": refund_amount,
+                "original_invoice_id": original_invoice_id,
+            }
+        except Exception as exc:
+            if conn:
+                conn.rollback()
+            logging.error("Could not create POS sale return: %s", exc, exc_info=True)
+            return False, {"message": str(exc)}
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def get_return_by_id(self, return_id):
+        try:
+            with self.db.get_db_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("SELECT * FROM POS_Sale_Returns WHERE Return_ID = %s", (return_id,))
+                header = cursor.fetchone()
+                if header:
+                    cursor.execute(
+                        "SELECT * FROM POS_Sale_Return_Details WHERE Return_ID = %s ORDER BY Return_Detail_ID",
+                        (return_id,),
+                    )
+                    header["details"] = cursor.fetchall() or []
+                return header
+        except Exception as exc:
+            logging.error("Could not load POS return: %s", exc, exc_info=True)
+            return None
+
+    def list_returns(self, start_date=None, end_date=None, status=None, limit=100, offset=0):
+        try:
+            with self.db.get_db_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+                query = """
+                    SELECT r.*, i.Invoice_No, c.Client_Name,
+                           COALESCE(u.Full_Name, u.Username) AS User_Name
+                    FROM POS_Sale_Returns r
+                    LEFT JOIN Sales_Invoices i ON i.Invoice_ID = r.Original_Invoice_ID
+                    LEFT JOIN Clients c ON c.Client_ID = r.Client_ID
+                    LEFT JOIN Users u ON u.User_ID = r.Created_By
+                    WHERE 1 = 1
+                """
+                params = []
+                if start_date:
+                    query += " AND r.Return_Date >= %s"
+                    params.append(start_date)
+                if end_date:
+                    query += " AND r.Return_Date <= %s"
+                    params.append(end_date)
+                if status:
+                    query += " AND r.Status = %s"
+                    params.append(status)
+                query += " ORDER BY r.Return_Date DESC, r.Return_ID DESC LIMIT %s OFFSET %s"
+                params.extend([int(limit), int(offset)])
+                cursor.execute(query, tuple(params))
+                return cursor.fetchall() or []
+        except Exception as exc:
+            logging.error("Could not list POS returns: %s", exc, exc_info=True)
+            return []
+    def evaluate_promotion(self, code, cart_items):
+        """Return the deterministic discount for a coupon/code and cart."""
+        promotions = self.get_active_promotions(code=str(code or "").strip())
+        if not promotions:
+            return False, {"message": "Promotion introuvable ou inactive."}
+        promotion = promotions[0]
+        product_ids = set(promotion.get("Product_IDs") or [])
+        applicable = []
+        for item in cart_items or []:
+            product_id = item.get("product_id") or item.get("Product_ID")
+            if product_ids and product_id not in product_ids:
+                continue
+            qty = Decimal(str(item.get("qty_sold") or item.get("Qty_Sold") or 0))
+            price = money(item.get("unit_price_ht") or item.get("Unit_Price_HT"))
+            if qty > 0 and price >= 0:
+                applicable.append({"qty": qty, "price": price, "base": money(qty * price)})
+        base_amount = sum((row["base"] for row in applicable), Decimal("0.00"))
+        min_amount = money(promotion.get("Min_Amount"))
+        if base_amount <= 0 or (min_amount > 0 and base_amount < min_amount):
+            return False, {"message": "Le panier ne respecte pas le minimum de la promotion."}
+
+        promotion_type = promotion.get("Promotion_Type")
+        value = money(promotion.get("Value"))
+        discount = Decimal("0.00")
+        if promotion_type == "Percent":
+            discount = (base_amount * value / Decimal("100")).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        elif promotion_type == "Fixed":
+            discount = min(value, base_amount)
+        elif promotion_type == "BuyXGetY":
+            buy_qty = Decimal(str(promotion.get("Buy_Qty") or 0))
+            get_qty = Decimal(str(promotion.get("Get_Qty") or 0))
+            if buy_qty <= 0 or get_qty <= 0:
+                return False, {"message": "Configuration Buy X Get Y invalide."}
+            free_units = sum((row["qty"] for row in applicable), Decimal("0")) // (buy_qty + get_qty) * get_qty
+            prices = sorted((row["price"] for row in applicable), reverse=False)
+            discount = sum(prices[:int(free_units)], Decimal("0.00"))
+        discount = min(discount, base_amount)
+        return True, {
+            "promotion": promotion,
+            "base_amount": base_amount,
+            "discount_amount": discount,
+            "discount_percent": (discount / base_amount * Decimal("100")) if base_amount else Decimal("0"),
+        }
     def get_active_promotions(self, on_date=None, code=None):
         on_date = on_date or date.today()
         try:

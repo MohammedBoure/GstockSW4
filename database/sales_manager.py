@@ -350,6 +350,11 @@ class SalesManager:
             if not valid:
                 conn.rollback()
                 return False, {"message": payment_error}
+            credit_amount = sum((payment["amount"] for payment in normalized_payments if payment["method"] == "Credit"), Decimal("0.00"))
+            credit_ok, credit_info = POSFeatureManager.validate_credit_limit(cursor, client_id, credit_amount)
+            if not credit_ok:
+                conn.rollback()
+                return False, {"message": credit_info.get("message", "Limite de crédit dépassée.")}
             cursor.execute("UPDATE Sales_Invoices SET Payment_Method = %s WHERE Invoice_ID = %s", (normalized_payments[0]["method"], invoice_id))
             for line_no, payment in enumerate(normalized_payments, start=1):
                 cursor.execute(
@@ -979,6 +984,9 @@ class SalesManager:
                     SELECT 
                         i.Invoice_ID, i.Invoice_No, i.Invoice_Date, i.Status, i.Total_Amount_HT, i.Total_Amount_TTC,
                         i.Total_Discount, i.Total_TVA, i.Payment_Method, i.Terminal_ID, i.Cash_Session_ID, i.Created_By,
+                        COALESCE((SELECT GROUP_CONCAT(CONCAT(pp.Payment_Method, ': ', FORMAT(pp.Amount, 2)) SEPARATOR ' | ') FROM POS_Sale_Payments pp WHERE pp.Invoice_ID = i.Invoice_ID), i.Payment_Method) AS Payment_Summary,
+                        COALESCE((SELECT SUM(pp.Amount) FROM POS_Sale_Payments pp WHERE pp.Invoice_ID = i.Invoice_ID), i.Total_Amount_TTC) AS Paid_Amount,
+                        COALESCE((SELECT SUM(pp.Change_Amount) FROM POS_Sale_Payments pp WHERE pp.Invoice_ID = i.Invoice_ID), 0) AS Change_Amount,
                         t.Terminal_Name, s.Session_No,
                         c.Client_Name,
                         COALESCE(u.Full_Name, u.Username) AS User_Name,

@@ -36,7 +36,8 @@ def _money(value):
 class PaymentDialog(QDialog):
     """Collect split payments while keeping the POS UI compact."""
 
-    def __init__(self, total, parent=None, default_method="Cash"):
+    def __init__(self, total, parent=None, default_method="Cash", credit_summary=None):
+        self.credit_summary = credit_summary or {}
         super().__init__(parent)
         self.total = _money(total)
         self.rows = []
@@ -58,6 +59,14 @@ class PaymentDialog(QDialog):
         hint = QLabel("Vous pouvez répartir le montant sur plusieurs moyens de paiement.")
         hint.setStyleSheet("color: #64748b;")
         layout.addWidget(hint)
+
+        if self.credit_summary:
+            credit_label = QLabel(
+                f"Credit client: {self.credit_summary.get('Credit_Balance', 0):.2f} DA utilisés | "
+                f"Disponible: {self.credit_summary.get('Available_Credit') if self.credit_summary.get('Available_Credit') is not None else 'Illimité'} DA"
+            )
+            credit_label.setStyleSheet("color: #7c3aed; font-weight: 700;")
+            layout.addWidget(credit_label)
 
         self.rows_widget = QWidget()
         self.rows_layout = QVBoxLayout(self.rows_widget)

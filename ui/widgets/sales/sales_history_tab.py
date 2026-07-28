@@ -1,12 +1,13 @@
 # ui/widgets/sales/sales_history_tab.py
 
+import csv
 import os
 from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QHeaderView, QPushButton,
     QHBoxLayout, QLabel, QComboBox, QDateEdit, QDialog, QFormLayout, 
     QGroupBox, QAbstractItemView, QStyle, QTableWidgetItem, QSpinBox, QMessageBox,
-    QFileDialog
+    QFileDialog, QInputDialog
 )
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtGui import QColor, QBrush, QFont
@@ -333,11 +334,17 @@ class SaleDetailsDialog(QDialog):
         self.btn_pdf.setStyleSheet("background-color: #3498db; color: white; font-weight: bold; padding: 5px;")
         self.btn_pdf.clicked.connect(self.print_pdf)
 
+        self.btn_return = QPushButton("Retour / Remboursement")
+        self.btn_return.setStyleSheet("background-color: #f59e0b; color: white; font-weight: bold; padding: 5px;")
+        self.btn_return.clicked.connect(self.create_return_for_selected_line)
+        self.btn_return.setEnabled(hasattr(self.data_manager, "pos_features"))
+
         btn_close = QPushButton("Fermer")
         btn_close.clicked.connect(self.accept)
         
         btn_row.addWidget(self.btn_cancel_sale)
         btn_row.addStretch()
+        btn_row.addWidget(self.btn_return)
         btn_row.addWidget(self.btn_pdf)
         btn_row.addWidget(self.btn_save)
         btn_row.addWidget(btn_close)
@@ -418,6 +425,51 @@ class SaleDetailsDialog(QDialog):
         self.table.setColumnHidden(4, not has_remise)
         self.table.setColumnHidden(5, not has_tva)
 
+    def create_return_for_selected_line(self):
+        checker = getattr(self.window(), "has_permission", None)
+        if checker and not checker("act_pos_return"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour créer un retour.")
+            return
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self.details_list):
+            QMessageBox.warning(self, "Retour", "Sélectionnez une ligne à retourner.")
+            return
+        detail = self.details_list[row]
+        max_qty = float(detail.get("Qty_Sold") or 0)
+        qty, ok = QInputDialog.getDouble(
+            self, "Quantité retournée", "Quantité:", max_qty, 0.01, max_qty, 2
+        )
+        if not ok:
+            return
+        labels = ["Espèces", "Carte", "Virement", "Versement", "Autre", "Crédit client"]
+        values = ["Cash", "Card", "Transfer", "Versement", "Other", "Credit"]
+        label, ok = QInputDialog.getItem(self, "Remboursement", "Moyen:", labels, 0, False)
+        if not ok:
+            return
+        reason, ok = QInputDialog.getText(self, "Motif du retour", "Motif:")
+        if not ok:
+            return
+        success, result = self.data_manager.pos_features.create_sale_return(
+            self.invoice_data.get("Invoice_ID"),
+            [{"original_detail_id": detail.get("Detail_ID"), "qty_returned": qty}],
+            refund_method=values[labels.index(label)],
+            reason=reason.strip() or "Retour client",
+            user_id=self._current_user_id(),
+        )
+        if success:
+            QMessageBox.information(self, "Retour", f"Retour enregistré: {result.get('return_no')}")
+            if hasattr(self.parent_tab, "load_sales_data"):
+                self.parent_tab.load_sales_data()
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Retour", result.get("message", "Impossible d'enregistrer le retour."))
+
+    def _current_user_id(self):
+        try:
+            from database.system_logger import active_user_id
+            return active_user_id.get()
+        except Exception:
+            return None
     def save_changes(self):
         changes_made = False
         for r in range(self.table.rowCount()):
@@ -478,6 +530,9 @@ class SalesHistoryTab(QWidget):
         super().__init__()
         self.data_manager = data_manager
         self.raw_data = []
+        self.filtered_data = []
+        self.current_page = 1
+        self.page_size = 100
         self.init_ui()
         self.load_filters()
         self.load_sales_data()
@@ -507,7 +562,18 @@ class SalesHistoryTab(QWidget):
         self.cb_client.setMinimumWidth(200)
         self.cb_client.addItem("Tous les Clients", None)
         self.cb_client.currentIndexChanged.connect(self.load_sales_data)
-        
+
+        self.cb_status = QComboBox()
+        self.cb_status.addItem("Tous les statuts", None)
+        for status in ("Validated", "Paid", "Cancelled"):
+            self.cb_status.addItem(status, status)
+        self.cb_status.currentIndexChanged.connect(self.apply_filter_local)
+
+        self.cb_payment = QComboBox()
+        self.cb_payment.addItem("Tous les paiements", None)
+        for method, label in (("Cash", "Especes"), ("Card", "Carte"), ("Transfer", "Virement"), ("Versement", "Versement"), ("Other", "Autre"), ("Credit", "Credit")):
+            self.cb_payment.addItem(label, method)
+        self.cb_payment.currentIndexChanged.connect(self.apply_filter_local)
         self.search_input = BarcodeLineEdit()
         self.search_input.setPlaceholderText("Rechercher par ID, Client, Caisse ou Utilisateur...")
         self.search_input.textChanged.connect(self.apply_filter_local)
@@ -521,15 +587,22 @@ class SalesHistoryTab(QWidget):
         self.btn_print_selected.setEnabled(False)
         self.btn_print_selected.setStyleSheet("background-color: #3498db; color: white; font-weight: bold; padding: 5px 15px;")
         self.btn_print_selected.clicked.connect(self.print_selected_invoice)
-        
+
+        self.btn_export = QPushButton("Exporter CSV")
+        self.btn_export.clicked.connect(self.export_filtered_csv)
         filter_layout.addWidget(QLabel("Du:"))
         filter_layout.addWidget(self.date_from)
         filter_layout.addWidget(QLabel("Au:"))
         filter_layout.addWidget(self.date_to)
         filter_layout.addWidget(QLabel("Client:"))
         filter_layout.addWidget(self.cb_client)
+        filter_layout.addWidget(QLabel("Statut:"))
+        filter_layout.addWidget(self.cb_status)
+        filter_layout.addWidget(QLabel("Paiement:"))
+        filter_layout.addWidget(self.cb_payment)
         filter_layout.addWidget(self.search_input)
         filter_layout.addWidget(self.btn_print_selected)
+        filter_layout.addWidget(self.btn_export)
         filter_layout.addWidget(btn_refresh)
         
         layout.addLayout(filter_layout)
@@ -564,6 +637,18 @@ class SalesHistoryTab(QWidget):
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
         
         layout.addWidget(self.table)
+
+        pagination_layout = QHBoxLayout()
+        self.btn_prev_page = QPushButton("Page precedente")
+        self.btn_next_page = QPushButton("Page suivante")
+        self.lbl_page = QLabel("Page 1")
+        self.btn_prev_page.clicked.connect(self.go_previous_page)
+        self.btn_next_page.clicked.connect(self.go_next_page)
+        pagination_layout.addStretch()
+        pagination_layout.addWidget(self.btn_prev_page)
+        pagination_layout.addWidget(self.lbl_page)
+        pagination_layout.addWidget(self.btn_next_page)
+        layout.addLayout(pagination_layout)
         
         # --- 3. Summary Section ---
         summary_layout = QHBoxLayout()
@@ -590,7 +675,9 @@ class SalesHistoryTab(QWidget):
 
     def apply_filter_local(self):
         txt = self.search_input.text().lower().strip()
-        
+        status = self.cb_status.currentData() if hasattr(self, "cb_status") else None
+        payment = self.cb_payment.currentData() if hasattr(self, "cb_payment") else None
+
         filtered = []
         for inv in self.raw_data:
             full_text = (
@@ -598,13 +685,42 @@ class SalesHistoryTab(QWidget):
                 f"{inv.get('Invoice_No','')} {inv.get('Operation_Label','')} "
                 f"{inv.get('Client_Name','')} {inv.get('Status','')} "
                 f"{inv.get('Caisse_Label','')} {inv.get('Terminal_Name','')} "
-                f"{inv.get('User_Name','')} {inv.get('Session_No','')}"
+                f"{inv.get('User_Name','')} {inv.get('Session_No','')} "
+                f"{inv.get('Payment_Summary','')}"
             ).lower()
-            if txt and txt not in full_text: continue
+            if txt and txt not in full_text:
+                continue
+            if status and inv.get('Status') != status:
+                continue
+            if payment and inv.get('Row_Type') == 'Sale':
+                methods = str(inv.get('Payment_Summary') or inv.get('Payment_Method') or '')
+                if payment not in methods:
+                    continue
             filtered.append(inv)
-            
-        self._populate_table(filtered)
 
+        self.filtered_data = filtered
+        self.current_page = 1
+        self._refresh_page()
+
+    def _refresh_page(self):
+        total_pages = max(1, (len(self.filtered_data) + self.page_size - 1) // self.page_size)
+        self.current_page = min(max(1, self.current_page), total_pages)
+        start = (self.current_page - 1) * self.page_size
+        self._populate_table(self.filtered_data[start:start + self.page_size])
+        self.lbl_page.setText(f"Page {self.current_page}/{total_pages} ({len(self.filtered_data)} lignes)")
+        self.btn_prev_page.setEnabled(self.current_page > 1)
+        self.btn_next_page.setEnabled(self.current_page < total_pages)
+
+    def go_previous_page(self):
+        if self.current_page > 1:
+            self.current_page -= 1
+            self._refresh_page()
+
+    def go_next_page(self):
+        total_pages = max(1, (len(self.filtered_data) + self.page_size - 1) // self.page_size)
+        if self.current_page < total_pages:
+            self.current_page += 1
+            self._refresh_page()
     def _populate_table(self, data):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
@@ -645,9 +761,10 @@ class SalesHistoryTab(QWidget):
             
             self.table.setItem(r, 5, item(inv.get('Caisse_Label') or inv.get('Terminal_Name') or "-"))
             self.table.setItem(r, 6, item(inv.get('User_Name') or "-"))
-            self.table.setItem(r, 7, item(inv.get('Payment_Method') or "-"))
+            payment_text = inv.get("Payment_Summary") or inv.get("Payment_Method") or "-"
+            self.table.setItem(r, 7, item(payment_text))
 
-            amount_entered = inv.get('Amount_Entered')
+            amount_entered = inv.get("Paid_Amount") if row_type == "Sale" else inv.get("Amount_Entered")
             self.table.setItem(r, 8, item(format_money(amount_entered) if amount_entered is not None else "-"))
             self.table.setItem(r, 9, item(format_money(inv.get('Total_Amount_TTC', 0))))
             
@@ -681,6 +798,32 @@ class SalesHistoryTab(QWidget):
         has_selection = bool(data and data.get('Row_Type') == 'Sale')
         self.btn_print_selected.setEnabled(has_selection)
 
+    def export_filtered_csv(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Exporter l'historique", "historique_ventes.csv", "CSV (*.csv)")
+        if not path:
+            return
+        headers = ["ID", "Date", "Operation", "Client", "Statut", "Caisse", "Utilisateur", "Paiement", "Paye", "Total TTC", "Profit"]
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(headers)
+                for inv in self.filtered_data:
+                    writer.writerow([
+                        inv.get("Invoice_No") or inv.get("Operation_ID") or inv.get("Invoice_ID"),
+                        inv.get("Event_Date") or inv.get("Invoice_Date"),
+                        inv.get("Operation_Label"),
+                        inv.get("Client_Name") or "-",
+                        inv.get("Status") or "-",
+                        inv.get("Caisse_Label") or inv.get("Terminal_Name") or "-",
+                        inv.get("User_Name") or "-",
+                        inv.get("Payment_Summary") or inv.get("Payment_Method") or "-",
+                        inv.get("Paid_Amount") if inv.get("Row_Type") == "Sale" else inv.get("Amount_Entered"),
+                        inv.get("Total_Amount_TTC") or 0,
+                        inv.get("Total_Profit") or 0,
+                    ])
+            QMessageBox.information(self, "Export", "Historique exporte avec succes.")
+        except OSError as exc:
+            QMessageBox.warning(self, "Export", f"Echec de l'export: {exc}")
     def print_selected_invoice(self):
         row = self.table.currentRow()
         if row < 0: return

@@ -226,6 +226,12 @@ class PointOfSaleTab(QWidget):
         self.btn_close_session.clicked.connect(self.close_cash_session)
         session_buttons.addWidget(self.btn_open_session)
         session_buttons.addWidget(self.btn_close_session)
+        self.btn_cash_in = QPushButton("Cash In")
+        self.btn_cash_out = QPushButton("Cash Out")
+        self.btn_cash_in.clicked.connect(lambda: self.record_cash_movement("Cash_In"))
+        self.btn_cash_out.clicked.connect(lambda: self.record_cash_movement("Cash_Out"))
+        session_buttons.addWidget(self.btn_cash_in)
+        session_buttons.addWidget(self.btn_cash_out)
 
         self.cb_payment_method = QComboBox()
         self.cb_payment_method.addItem("Especes", "Cash")
@@ -294,6 +300,9 @@ class PointOfSaleTab(QWidget):
         self.btn_payment_details = QPushButton("Paiement détaillé / multi-paiement (F6)")
         self.btn_payment_details.clicked.connect(self.open_payment_dialog)
         right_layout.addWidget(self.btn_payment_details)
+        self.btn_promotion = QPushButton("Coupon / Promotion")
+        self.btn_promotion.clicked.connect(self.apply_promotion_code)
+        right_layout.addWidget(self.btn_promotion)
         right_layout.addWidget(self.lbl_total_ht)
         right_layout.addWidget(self.lbl_total_tva)
         right_layout.addWidget(self.lbl_total_remise)
@@ -332,14 +341,45 @@ class PointOfSaleTab(QWidget):
         self._shortcut_hold = QShortcut(QKeySequence("F8"), self)
         self._shortcut_hold.activated.connect(lambda: self.save_current_draft("Held"))
 
+    def apply_promotion_code(self):
+        if not self._has_permission("act_pos_discount"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour appliquer une promotion.")
+            return
+        code, ok = QInputDialog.getText(self, "Promotion", "Code coupon:")
+        if not ok or not code.strip():
+            return
+        items = self._collect_cart_items()
+        success, result = self.data_manager.pos_features.evaluate_promotion(code.strip(), items)
+        if not success:
+            QMessageBox.warning(self, "Promotion", result.get("message", "Promotion invalide."))
+            return
+        discount_percent = float(result.get("discount_percent") or 0)
+        allowed_products = set(result.get("promotion", {}).get("Product_IDs") or [])
+        for row in range(self.cart_table.rowCount()):
+            batch = self.cart_table.item(row, 0).data(Qt.UserRole) or {}
+            if allowed_products and batch.get("Product_ID") not in allowed_products:
+                continue
+            remise = self.cart_table.cellWidget(row, 6)
+            remise.type_combo.setCurrentText("%")
+            remise.value_spin.setValue(min(100.0, discount_percent))
+        self.calculate_totals()
+        self.btn_promotion.setText(f"Promotion: {code.strip()}")
+        QMessageBox.information(
+            self, "Promotion", f"Remise appliquée: {float(result.get('discount_amount') or 0):.2f} DA"
+        )
     def open_payment_dialog(self):
         if self.cart_table.rowCount() == 0:
             QMessageBox.warning(self, "Paiement", "Le panier est vide.")
             return False
+        credit_summary = {}
+        client_id = self.cb_client.currentData()
+        if client_id and hasattr(self.data_manager, "pos_features"):
+            credit_summary = self.data_manager.pos_features.get_client_credit_summary(client_id)
         dialog = PaymentDialog(
             self.current_total_ttc,
             self,
             default_method=self.cb_payment_method.currentData() or "Cash",
+            credit_summary=credit_summary,
         )
         if dialog.exec() != QDialog.Accepted:
             return False
@@ -554,22 +594,37 @@ class PointOfSaleTab(QWidget):
             QMessageBox.warning(self, "Caisse", "Videz ou validez le panier avant de cloturer la caisse.")
             return
         summary = self.data_manager.cash_sessions.get_session_summary(self.cash_session_id)
-        expected_cash = float(summary.get('Expected_Cash') or 0)
-        amount, ok = QInputDialog.getDouble(
-            self,
-            "Cloturer caisse",
-            f"Especes attendues hors fond de caisse: {format_money(expected_cash)} DA\nMontant cash compte:",
-            expected_cash,
-            0.0,
-            999999999.0,
-            2,
-        )
-        if not ok:
-            return
+        open_session = self.data_manager.cash_sessions.get_open_session(self.terminal_id) or {}
+        opening_amount = float(open_session.get("Opening_Amount") or 0)
+        expected_cash = float(summary.get("Expected_Cash") or 0)
+        expected_card = float(summary.get("Expected_Card") or 0)
+        expected_transfer = float(summary.get("Expected_Transfer") or 0)
+        expected_versement = float(summary.get("Expected_Versement") or 0)
+        expected_other = float(summary.get("Expected_Other") or 0)
+        expected_credit = float(summary.get("Expected_Credit") or 0)
+        ask_values = [
+            ("Espèces à compter", expected_cash + opening_amount),
+            ("Carte à compter", expected_card),
+            ("Virement à compter", expected_transfer),
+            ("Versement à compter", expected_versement),
+            ("Autre à compter", expected_other),
+            ("Crédit à rapprocher", expected_credit),
+        ]
+        counted = []
+        for label, default in ask_values:
+            value, ok = QInputDialog.getDouble(self, "Clôturer caisse", label, default, 0.0, 999999999.0, 2)
+            if not ok:
+                return
+            counted.append(value)
         success, result = self.data_manager.cash_sessions.close_session(
             self.cash_session_id,
             self.get_current_user_id(),
-            counted_cash=amount,
+            counted_cash=counted[0],
+            counted_card=counted[1],
+            counted_transfer=counted[2],
+            counted_versement=counted[3],
+            counted_other=counted[4],
+            counted_credit=counted[5],
         )
         if success:
             diff = float(result.get('Cash_Difference') or 0)
@@ -582,6 +637,26 @@ class PointOfSaleTab(QWidget):
         else:
             QMessageBox.warning(self, "Caisse", result.get('message', "Impossible de cloturer la caisse."))
 
+    def record_cash_movement(self, movement_type):
+        if not self._has_permission("act_pos_cash_movement"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour modifier la caisse.")
+            return
+        if not self.cash_session_id:
+            QMessageBox.warning(self, "Caisse", "Aucune session ouverte.")
+            return
+        amount, ok = QInputDialog.getDouble(self, "Mouvement caisse", "Montant:", 0.0, 0.01, 999999999.0, 2)
+        if not ok:
+            return
+        reason, ok = QInputDialog.getText(self, "Mouvement caisse", "Motif:")
+        if not ok or not reason.strip():
+            return
+        movement_id = self.data_manager.pos_features.add_cash_movement(
+            self.cash_session_id, movement_type, amount, reason.strip(), self.get_current_user_id()
+        )
+        if movement_id:
+            QMessageBox.information(self, "Caisse", "Mouvement enregistré.")
+        else:
+            QMessageBox.warning(self, "Caisse", "Impossible d'enregistrer le mouvement.")
     def load_initial_data(self):
         # Load clients
         self.cb_client.clear()
@@ -1158,6 +1233,13 @@ class PointOfSaleTab(QWidget):
                     import logging
                     logging.error(f"Erreur lors de la préparation de l'impression: {e}", exc_info=True)
                     QMessageBox.warning(self, "Erreur Impression", f"La vente a été enregistrée avec succès, mais une erreur s'est produite lors de l'impression.\nDétail: {e}")
+
+            if client_id and not result.get("duplicate"):
+                points = int(float(self.current_total_ttc or 0) // 100)
+                if points > 0:
+                    self.data_manager.pos_features.record_loyalty_transaction(
+                        client_id, result.get("invoice_id"), "Earn", points, self.get_current_user_id()
+                    )
 
             QMessageBox.information(self, "Succès", f"Vente enregistrée avec succès ! Facture {invoice_label}")
             self.active_draft_id = None

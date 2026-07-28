@@ -172,7 +172,7 @@ class CashSessionManager:
             logging.error(f"Could not summarize cash session: {e}", exc_info=True)
             return {}
 
-    def close_session(self, cash_session_id: int, user_id: Optional[int], counted_cash=0.0, notes=None) -> Tuple[bool, Dict]:
+    def close_session(self, cash_session_id: int, user_id: Optional[int], counted_cash=0.0, notes=None, counted_card=None, counted_transfer=None, counted_versement=None, counted_other=None, counted_credit=None) -> Tuple[bool, Dict]:
         try:
             with self.db.get_db_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
@@ -194,8 +194,21 @@ class CashSessionManager:
                 expected_cash = float(summary.get("Expected_Cash") or 0)
                 expected_card = float(summary.get("Expected_Card") or 0)
                 expected_transfer = float(summary.get("Expected_Transfer") or 0)
+                expected_versement = float(summary.get("Expected_Versement") or 0)
+                expected_other = float(summary.get("Expected_Other") or 0)
+                expected_credit = float(summary.get("Expected_Credit") or 0)
                 opening_amount = float(session.get("Opening_Amount") or 0)
+                counted_card = float(counted_card if counted_card is not None else expected_card)
+                counted_transfer = float(counted_transfer if counted_transfer is not None else expected_transfer)
+                counted_versement = float(counted_versement if counted_versement is not None else expected_versement)
+                counted_other = float(counted_other if counted_other is not None else expected_other)
+                counted_credit = float(counted_credit if counted_credit is not None else expected_credit)
                 cash_difference = float(counted_cash) - (opening_amount + expected_cash)
+                card_difference = counted_card - expected_card
+                transfer_difference = counted_transfer - expected_transfer
+                versement_difference = counted_versement - expected_versement
+                other_difference = counted_other - expected_other
+                credit_difference = counted_credit - expected_credit
 
                 cursor.execute(
                     """
@@ -206,21 +219,46 @@ class CashSessionManager:
                         Expected_Cash = %s,
                         Expected_Card = %s,
                         Expected_Transfer = %s,
+                        Expected_Versement = %s,
+                        Expected_Other = %s,
+                        Expected_Credit = %s,
                         Counted_Cash = %s,
+                        Counted_Card = %s,
+                        Counted_Transfer = %s,
+                        Counted_Versement = %s,
+                        Counted_Other = %s,
+                        Counted_Credit = %s,
                         Cash_Difference = %s,
+                        Card_Difference = %s,
+                        Transfer_Difference = %s,
+                        Versement_Difference = %s,
+                        Other_Difference = %s,
+                        Credit_Difference = %s,
                         Notes = %s
                     WHERE Cash_Session_ID = %s
                     """,
                     (
-                        user_id, expected_cash, expected_card, expected_transfer,
-                        counted_cash, cash_difference, notes, cash_session_id,
+                        user_id, expected_cash, expected_card, expected_transfer, expected_versement, expected_other, expected_credit,
+                        counted_cash, counted_card, counted_transfer, counted_versement, counted_other, counted_credit,
+                        cash_difference, card_difference, transfer_difference, versement_difference, other_difference, credit_difference,
+                        notes, cash_session_id,
                     ),
                 )
                 conn.commit()
                 summary.update({
                     "Opening_Amount": opening_amount,
                     "Counted_Cash": float(counted_cash),
+                    "Counted_Card": counted_card,
+                    "Counted_Transfer": counted_transfer,
+                    "Counted_Versement": counted_versement,
+                    "Counted_Other": counted_other,
+                    "Counted_Credit": counted_credit,
                     "Cash_Difference": cash_difference,
+                    "Card_Difference": card_difference,
+                    "Transfer_Difference": transfer_difference,
+                    "Versement_Difference": versement_difference,
+                    "Other_Difference": other_difference,
+                    "Credit_Difference": credit_difference,
                 })
                 return True, summary
         except Exception as e:
