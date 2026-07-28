@@ -101,8 +101,18 @@ def _permission_state(user, permission):
 
 
 def has_permission(user, permission):
-    """Return the explicit value of one permission key."""
-    return _permission_state(user, permission)[1]
+    """Return a permission while preserving legacy Admin access.
+
+    Older databases can contain Admin users created before a newer permission
+    key was introduced. A missing key must not remove an existing Admin
+    feature, while an explicitly stored ``false`` value remains a deliberate
+    deny and is therefore respected.
+    """
+    present, granted = _permission_state(user, permission)
+    if present:
+        return granted
+
+    return isinstance(user, dict) and str(user.get("Role", "")).strip().lower() == "admin"
 
 
 def has_navigation_permission(user, permission):
