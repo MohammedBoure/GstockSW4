@@ -29,6 +29,9 @@ TABLE_IMPORT_ORDER = [
     'Active_Containers', 'External_Transfer_Log', 'External_Transfer_Details',
     'Clients', 'POS_Terminals', 'POS_Cash_Sessions', 'Sales_Invoice_Sequences', 'Sales_Invoices', 'Sales_Details', 'Client_Payments',
     'Client_Credit_Notes', 'Client_Credit_Note_Details', 'Stock_Movement_Log',
+    'POS_Sale_Payments', 'POS_Sale_Drafts', 'POS_Sale_Returns', 'POS_Sale_Return_Details',
+    'POS_Cash_Movements', 'POS_Audit_Log', 'POS_Promotions', 'POS_Promotion_Products',
+    'POS_Loyalty_Accounts', 'POS_Loyalty_Transactions',
     'Supplier_Credit_Notes', 'Credit_Note_Details', 'Supplier_Payments', 'Print_Templates', 'SystemLogs' # <-- تمت الإضافة هنا
 ]
 

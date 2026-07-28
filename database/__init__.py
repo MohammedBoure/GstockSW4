@@ -33,6 +33,7 @@ from .client_payment_manager import ClientPaymentManager
 from .client_credit_note_manager import ClientCreditNoteManager
 from .pos_terminal_manager import POSTerminalManager
 from .cash_session_manager import CashSessionManager
+from .pos_feature_manager import POSFeatureManager
 class LabDataManager:
 
     def __init__(self, db_instance: Database):
@@ -79,6 +80,9 @@ class LabDataManager:
         # 6. Sales & Clients Managers
         self.clients = ClientManager(db_instance)
         self.sales = SalesManager(db_instance)
+        # Extended POS services are layered on top of the existing sales
+        # tables; they never replace the target application's managers.
+        self.pos_features = POSFeatureManager(db_instance)
         self.client_payments = ClientPaymentManager(db_instance)
         self.client_credit_notes = ClientCreditNoteManager(db_instance)
         self.pos_terminals = POSTerminalManager(db_instance)

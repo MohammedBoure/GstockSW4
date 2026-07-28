@@ -5,10 +5,13 @@ import uuid
 from datetime import date
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                                QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-                               QHeaderView, QComboBox, QMessageBox, QDoubleSpinBox, QSpinBox,
+                               QHeaderView, QComboBox, QMessageBox, QDoubleSpinBox, QSpinBox, QDialog,
                                QDateEdit, QFrame, QCompleter, QAbstractItemView, QInputDialog)
 from PySide6.QtCore import Qt, QDate, Signal, QStringListModel, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from branding import get_logo_path
+from .dialogs import ClientDialog
+from .pos_payment_dialog import PaymentDialog
 from ui.formatting import format_money
 
 class RemiseWidget(QWidget):
@@ -76,6 +79,9 @@ class PointOfSaleTab(QWidget):
         self.data_manager = data_manager
         
         self.cart_items = []  # List of dicts representing cart rows
+        self.payment_lines = []
+        self.active_draft_id = None
+        self.current_total_ttc = 0.0
         self.batches_cache = []
         self.search_map = {}
         self.barcode_map = {}
@@ -90,6 +96,7 @@ class PointOfSaleTab(QWidget):
         self.init_ui()
         self.load_initial_data()
         self.refresh_cash_session_context()
+        self._install_shortcuts()
 
     def init_ui(self):
         pass
@@ -126,6 +133,10 @@ class PointOfSaleTab(QWidget):
         header_layout.addStretch()
         
         left_layout.addLayout(header_layout)
+
+        self.btn_new_client = QPushButton("+ Nouveau client")
+        self.btn_new_client.clicked.connect(self.create_quick_client)
+        left_layout.addWidget(self.btn_new_client, alignment=Qt.AlignLeft)
         
         # Product Search / Barcode
         search_layout = QHBoxLayout()
@@ -222,6 +233,7 @@ class PointOfSaleTab(QWidget):
         self.cb_payment_method.addItem("Virement", "Transfer")
         self.cb_payment_method.addItem("Versement", "Versement")
         self.cb_payment_method.addItem("Autre", "Other")
+        self.cb_payment_method.addItem("Crédit client", "Credit")
         
         self.lbl_total_ht = QLabel("Total HT : 0.00 DA")
         self.lbl_total_ht.setObjectName("SubTotalLabel")
@@ -279,10 +291,24 @@ class PointOfSaleTab(QWidget):
         right_layout.addLayout(session_buttons)
         right_layout.addWidget(QLabel("Paiement :"))
         right_layout.addWidget(self.cb_payment_method)
+        self.btn_payment_details = QPushButton("Paiement détaillé / multi-paiement (F6)")
+        self.btn_payment_details.clicked.connect(self.open_payment_dialog)
+        right_layout.addWidget(self.btn_payment_details)
         right_layout.addWidget(self.lbl_total_ht)
         right_layout.addWidget(self.lbl_total_tva)
         right_layout.addWidget(self.lbl_total_remise)
         right_layout.addWidget(self.lbl_total_ttc)
+        draft_buttons = QHBoxLayout()
+        self.btn_hold_sale = QPushButton("Suspendre")
+        self.btn_quote = QPushButton("Devis")
+        self.btn_resume_sale = QPushButton("Reprendre")
+        self.btn_hold_sale.clicked.connect(lambda: self.save_current_draft("Held"))
+        self.btn_quote.clicked.connect(lambda: self.save_current_draft("Quote"))
+        self.btn_resume_sale.clicked.connect(self.resume_draft)
+        draft_buttons.addWidget(self.btn_hold_sale)
+        draft_buttons.addWidget(self.btn_quote)
+        draft_buttons.addWidget(self.btn_resume_sale)
+        right_layout.addLayout(draft_buttons)
         right_layout.addStretch()
         right_layout.addWidget(self.btn_validate)
         right_layout.addSpacing(10)
@@ -291,6 +317,151 @@ class PointOfSaleTab(QWidget):
         main_layout.addWidget(cart_frame, stretch=3)
         main_layout.addWidget(summary_frame, stretch=1)
 
+    def _has_permission(self, permission):
+        try:
+            checker = getattr(self.window(), "has_permission", None)
+            return bool(checker(permission)) if checker else True
+        except Exception:
+            return True
+
+    def _install_shortcuts(self):
+        self._shortcut_payment = QShortcut(QKeySequence("F6"), self)
+        self._shortcut_payment.activated.connect(self.open_payment_dialog)
+        self._shortcut_validate = QShortcut(QKeySequence("F9"), self)
+        self._shortcut_validate.activated.connect(self.validate_sale)
+        self._shortcut_hold = QShortcut(QKeySequence("F8"), self)
+        self._shortcut_hold.activated.connect(lambda: self.save_current_draft("Held"))
+
+    def open_payment_dialog(self):
+        if self.cart_table.rowCount() == 0:
+            QMessageBox.warning(self, "Paiement", "Le panier est vide.")
+            return False
+        dialog = PaymentDialog(
+            self.current_total_ttc,
+            self,
+            default_method=self.cb_payment_method.currentData() or "Cash",
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        self.payment_lines = dialog.get_payment_lines()
+        if self.payment_lines:
+            self.cb_payment_method.setCurrentIndex(
+                max(0, self.cb_payment_method.findData(self.payment_lines[0]["method"]))
+            )
+            self.btn_payment_details.setText(
+                f"Paiement enregistré ({len(self.payment_lines)} ligne(s))"
+            )
+        return True
+
+    def create_quick_client(self):
+        dialog = ClientDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.get_data()
+        if not data:
+            return
+        client_id = self.data_manager.clients.add_client(**data)
+        if not client_id:
+            QMessageBox.warning(self, "Client", "Impossible de créer le client.")
+            return
+        self.load_initial_data()
+        for index in range(self.cb_client.count()):
+            client = self.cb_client.itemData(index)
+            if isinstance(client, dict) and client.get("Client_ID") == client_id:
+                self.cb_client.setCurrentIndex(index)
+                break
+
+    def _collect_cart_items(self):
+        items = []
+        for row in range(self.cart_table.rowCount()):
+            batch_item = self.cart_table.item(row, 0)
+            if not batch_item:
+                continue
+            batch = batch_item.data(Qt.UserRole) or {}
+            qty = self.cart_table.cellWidget(row, 4).value()
+            price_ht = self.cart_table.cellWidget(row, 5).currentData() or 0.0
+            remise = self.cart_table.cellWidget(row, 6)
+            line_ht = qty * price_ht
+            if remise.get_type() == "%":
+                discount_percent = max(0.0, min(100.0, remise.get_value()))
+            else:
+                discount_amount = max(0.0, min(remise.get_value(), line_ht))
+                discount_percent = (discount_amount / line_ht * 100.0) if line_ht else 0.0
+            items.append({
+                "product_id": batch.get("Product_ID"),
+                "batch_id": batch.get("Batch_ID"),
+                "qty_sold": qty,
+                "unit_price_ht": price_ht,
+                "discount_percent": discount_percent,
+                "tva_percent": self.cart_table.cellWidget(row, 7).value(),
+            })
+        return items
+
+    def save_current_draft(self, draft_type="Held"):
+        if not self._has_permission("act_pos_hold_sale" if draft_type == "Held" else "act_pos_quote"):
+            QMessageBox.warning(self, "Autorisation", "Vous n'avez pas l'autorisation pour cette action.")
+            return
+        items = self._collect_cart_items()
+        if not items:
+            QMessageBox.warning(self, "Vente", "Le panier est vide.")
+            return
+        client = self.cb_client.currentData()
+        draft_id = self.data_manager.pos_features.save_draft(
+            client.get("Client_ID") if client else None,
+            self.date_edit.date().toString("yyyy-MM-dd"),
+            items,
+            self.current_total_ttc,
+            draft_type=draft_type,
+            user_id=self.get_current_user_id(),
+        )
+        if draft_id:
+            self.active_draft_id = None
+            self.clear_cart()
+            QMessageBox.information(self, "Vente", "La vente a été enregistrée et peut être reprise.")
+        else:
+            QMessageBox.warning(self, "Vente", "Impossible d'enregistrer la vente suspendue.")
+
+    def resume_draft(self):
+        drafts = self.data_manager.pos_features.list_drafts()
+        if not drafts:
+            QMessageBox.information(self, "Vente", "Aucune vente suspendue.")
+            return
+        labels = [
+            f"{row.get('Draft_Ref')} | {row.get('Draft_Type')} | {row.get('Client_Name') or 'Comptoir'} | {row.get('Total_Amount_TTC') or 0} DA"
+            for row in drafts
+        ]
+        label, ok = QInputDialog.getItem(self, "Reprendre une vente", "Vente:", labels, 0, False)
+        if not ok:
+            return
+        selected = drafts[labels.index(label)]
+        draft = self.data_manager.pos_features.get_draft(selected.get("Draft_ID"))
+        if not draft:
+            QMessageBox.warning(self, "Vente", "La vente suspendue est introuvable.")
+            return
+        self.clear_cart()
+        for item in draft.get("cart_items", []):
+            batch = next((b for b in self.batches_cache if b.get("Batch_ID") == item.get("batch_id")), None)
+            if not batch:
+                continue
+            self.add_product_to_cart(batch)
+            row = self.cart_table.rowCount() - 1
+            self.cart_table.cellWidget(row, 4).setValue(float(item.get("qty_sold") or 1))
+            price = self.cart_table.cellWidget(row, 5)
+            price_index = price.findData(float(item.get("unit_price_ht") or 0))
+            if price_index >= 0:
+                price.setCurrentIndex(price_index)
+            remise = self.cart_table.cellWidget(row, 6)
+            remise.type_combo.setCurrentText("%")
+            remise.value_spin.setValue(float(item.get("discount_percent") or 0))
+            self.cart_table.cellWidget(row, 7).setValue(float(item.get("tva_percent") or 0))
+        self.active_draft_id = draft.get("Draft_ID")
+        if draft.get("Client_ID"):
+            for index in range(self.cb_client.count()):
+                client = self.cb_client.itemData(index)
+                if isinstance(client, dict) and client.get("Client_ID") == draft.get("Client_ID"):
+                    self.cb_client.setCurrentIndex(index)
+                    break
+        self.calculate_totals()
     def make_combo_searchable(self, combo):
         combo.setEditable(True)
         combo.setInsertPolicy(QComboBox.NoInsert)
@@ -346,6 +517,9 @@ class PointOfSaleTab(QWidget):
             self.btn_validate.setToolTip("Ouvrez une session de caisse avant de valider la vente.")
 
     def open_cash_session(self):
+        if not self._has_permission("act_pos_open_session"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour ouvrir la caisse.")
+            return
         if not self.terminal_id:
             self.refresh_cash_session_context()
         if not self.terminal_id:
@@ -368,6 +542,9 @@ class PointOfSaleTab(QWidget):
             QMessageBox.warning(self, "Caisse", session.get('message', "Impossible d'ouvrir la caisse."))
 
     def close_cash_session(self):
+        if not self._has_permission("act_pos_close_session"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour clôturer la caisse.")
+            return
         if not self.cash_session_id:
             self.refresh_cash_session_context()
         if not self.cash_session_id:
@@ -724,6 +901,7 @@ class PointOfSaleTab(QWidget):
             total_item.setText(format_money(line_ttc))
             
         total_ttc = total_ht + total_tva
+        self.current_total_ttc = total_ttc
         
         self.lbl_total_ht.setText(f"Total HT : {format_money(total_ht)} DA")
         self.lbl_total_tva.setText(f"TVA : {format_money(total_tva)} DA")
@@ -889,9 +1067,13 @@ class PointOfSaleTab(QWidget):
             "total": round(total_ttc, 2),
             "show_discount": remise_total > 0,
             "show_tva": tva_total > 0,
+            "payments": list(self.payment_lines),
         }
 
     def validate_sale(self):
+        if not self._has_permission("act_validate_sale"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour la validation des ventes.")
+            return
         if self.cart_table.rowCount() == 0:
             QMessageBox.warning(self, "Erreur", "Le panier est vide.")
             return
@@ -907,6 +1089,9 @@ class PointOfSaleTab(QWidget):
         client = self.cb_client.currentData()
         client_id = client['Client_ID'] if client else None
         invoice_date = self.date_edit.date().toString("yyyy-MM-dd")
+
+        if not self.open_payment_dialog():
+            return
 
         cart_items = []
         for row in range(self.cart_table.rowCount()):
@@ -945,6 +1130,8 @@ class PointOfSaleTab(QWidget):
                 user_id=self.get_current_user_id(),
                 request_id=request_id,
                 notes=None if client else "Vente sans client",
+                payment_lines=self.payment_lines,
+                draft_id=self.active_draft_id,
             )
         except Exception as exc:
             logging.exception("Unexpected error while validating POS sale")
@@ -973,6 +1160,8 @@ class PointOfSaleTab(QWidget):
                     QMessageBox.warning(self, "Erreur Impression", f"La vente a été enregistrée avec succès, mais une erreur s'est produite lors de l'impression.\nDétail: {e}")
 
             QMessageBox.information(self, "Succès", f"Vente enregistrée avec succès ! Facture {invoice_label}")
+            self.active_draft_id = None
+            self.payment_lines = []
             self.clear_cart()
             self.load_initial_data()
         else:

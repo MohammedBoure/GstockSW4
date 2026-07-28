@@ -138,17 +138,36 @@ class CashSessionManager:
                 cursor.execute(
                     """
                     SELECT
-                        COALESCE(SUM(CASE WHEN Payment_Method = 'Cash' THEN Total_Amount_TTC ELSE 0 END), 0) AS Expected_Cash,
-                        COALESCE(SUM(CASE WHEN Payment_Method = 'Card' THEN Total_Amount_TTC ELSE 0 END), 0) AS Expected_Card,
-                        COALESCE(SUM(CASE WHEN Payment_Method = 'Transfer' THEN Total_Amount_TTC ELSE 0 END), 0) AS Expected_Transfer,
-                        COALESCE(SUM(Total_Amount_TTC), 0) AS Expected_Total,
-                        COUNT(*) AS Invoice_Count
-                    FROM Sales_Invoices
-                    WHERE Cash_Session_ID = %s AND Status <> 'Cancelled'
+                        COALESCE(SUM(CASE WHEN COALESCE(p.Payment_Method, i.Payment_Method) = 'Cash' THEN COALESCE(p.Amount, i.Total_Amount_TTC) ELSE 0 END), 0) AS Expected_Cash,
+                        COALESCE(SUM(CASE WHEN COALESCE(p.Payment_Method, i.Payment_Method) = 'Card' THEN COALESCE(p.Amount, i.Total_Amount_TTC) ELSE 0 END), 0) AS Expected_Card,
+                        COALESCE(SUM(CASE WHEN COALESCE(p.Payment_Method, i.Payment_Method) = 'Transfer' THEN COALESCE(p.Amount, i.Total_Amount_TTC) ELSE 0 END), 0) AS Expected_Transfer,
+                        COALESCE(SUM(CASE WHEN COALESCE(p.Payment_Method, i.Payment_Method) = 'Versement' THEN COALESCE(p.Amount, i.Total_Amount_TTC) ELSE 0 END), 0) AS Expected_Versement,
+                        COALESCE(SUM(CASE WHEN COALESCE(p.Payment_Method, i.Payment_Method) = 'Other' THEN COALESCE(p.Amount, i.Total_Amount_TTC) ELSE 0 END), 0) AS Expected_Other,
+                        COALESCE(SUM(CASE WHEN COALESCE(p.Payment_Method, i.Payment_Method) = 'Credit' THEN COALESCE(p.Amount, i.Total_Amount_TTC) ELSE 0 END), 0) AS Expected_Credit,
+                        COALESCE(SUM(COALESCE(p.Amount, i.Total_Amount_TTC)), 0) AS Expected_Total,
+                        COUNT(DISTINCT i.Invoice_ID) AS Invoice_Count
+                    FROM Sales_Invoices i
+                    LEFT JOIN POS_Sale_Payments p ON p.Invoice_ID = i.Invoice_ID
+                    WHERE i.Cash_Session_ID = %s AND i.Status <> 'Cancelled'
                     """,
                     (cash_session_id,),
                 )
-                return cursor.fetchone() or {}
+                summary = cursor.fetchone() or {}
+                cursor.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(CASE WHEN Movement_Type = 'Cash_In' THEN Amount ELSE 0 END), 0) AS Cash_In,
+                        COALESCE(SUM(CASE WHEN Movement_Type IN ('Cash_Out', 'Refund') THEN Amount ELSE 0 END), 0) AS Cash_Out
+                    FROM POS_Cash_Movements
+                    WHERE Cash_Session_ID = %s
+                    """,
+                    (cash_session_id,),
+                )
+                movements = cursor.fetchone() or {}
+                summary['Cash_In'] = movements.get('Cash_In') or 0
+                summary['Cash_Out'] = movements.get('Cash_Out') or 0
+                summary['Expected_Cash'] = float(summary.get('Expected_Cash') or 0) + float(summary['Cash_In']) - float(summary['Cash_Out'])
+                return summary
         except Exception as e:
             logging.error(f"Could not summarize cash session: {e}", exc_info=True)
             return {}

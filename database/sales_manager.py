@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from .system_logger import active_user_id, log_methods
 from .stock_movement_log_manager import StockMovementLogManager
+from .pos_feature_manager import money, PAYMENT_METHODS, POSFeatureManager
 
 @log_methods()
 class SalesManager:
@@ -58,11 +59,30 @@ class SalesManager:
                 Updated_At DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS POS_Sale_Payments (
+                Payment_ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                Invoice_ID BIGINT UNSIGNED NOT NULL,
+                Payment_Line_No INT UNSIGNED NOT NULL,
+                Payment_Method ENUM('Cash', 'Card', 'Transfer', 'Versement', 'Other', 'Credit') NOT NULL,
+                Amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                Tendered_Amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                Change_Amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                Reference VARCHAR(150) NULL,
+                Payment_UUID VARCHAR(80) NOT NULL UNIQUE,
+                Created_By INT UNSIGNED NULL,
+                Created_At DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (Invoice_ID) REFERENCES Sales_Invoices(Invoice_ID) ON DELETE CASCADE,
+                FOREIGN KEY (Created_By) REFERENCES Users(User_ID) ON DELETE SET NULL,
+                UNIQUE KEY uq_pos_sale_payment_line (Invoice_ID, Payment_Line_No)
+            )
+            """,
             "ALTER TABLE Sales_Invoices ADD COLUMN Invoice_No VARCHAR(100) NULL;",
             "ALTER TABLE Sales_Invoices ADD COLUMN Terminal_ID INT UNSIGNED NULL;",
             "ALTER TABLE Sales_Invoices ADD COLUMN Cash_Session_ID BIGINT UNSIGNED NULL;",
             "ALTER TABLE Sales_Invoices ADD COLUMN Sale_UUID VARCHAR(64) NULL;",
-            "ALTER TABLE Sales_Invoices ADD COLUMN Payment_Method ENUM('Cash', 'Card', 'Transfer', 'Versement', 'Other') DEFAULT 'Cash';",
+            "ALTER TABLE Sales_Invoices ADD COLUMN Payment_Method ENUM('Cash', 'Card', 'Transfer', 'Versement', 'Other', 'Credit') DEFAULT 'Cash';",
+            "ALTER TABLE Sales_Invoices MODIFY COLUMN Payment_Method ENUM('Cash', 'Card', 'Transfer', 'Versement', 'Other', 'Credit') DEFAULT 'Cash';",
             "CREATE UNIQUE INDEX uq_sales_invoice_no ON Sales_Invoices(Invoice_No);",
             "CREATE UNIQUE INDEX uq_sales_sale_uuid ON Sales_Invoices(Sale_UUID);",
             "CREATE INDEX idx_sales_terminal ON Sales_Invoices(Terminal_ID);",
@@ -148,14 +168,15 @@ class SalesManager:
 
     def create_validated_sale(
         self, client_id, invoice_date, cart_items, terminal_id, cash_session_id,
-        payment_method='Cash', user_id=None, request_id=None, notes=None
+        payment_method='Cash', user_id=None, request_id=None, notes=None,
+        payment_lines=None, draft_id=None
     ):
         """
         Create a validated sale atomically: invoice, details, stock deduction and
         stock movement logs are committed together. Returns (success, payload).
         """
         request_id = request_id or str(uuid.uuid4())
-        valid_payment_methods = {'Cash', 'Card', 'Transfer', 'Versement', 'Other'}
+        valid_payment_methods = set(PAYMENT_METHODS)
         if payment_method not in valid_payment_methods:
             payment_method = 'Cash'
         if not terminal_id or not cash_session_id:
@@ -316,6 +337,27 @@ class SalesManager:
                     return False, {"message": "Echec de journalisation du mouvement de stock."}
 
             self._update_invoice_totals(cursor, invoice_id)
+            cursor.execute("SELECT Total_Amount_TTC FROM Sales_Invoices WHERE Invoice_ID = %s", (invoice_id,))
+            invoice_total = money((cursor.fetchone() or {}).get('Total_Amount_TTC'))
+            effective_payment_lines = payment_lines or [{
+                "method": payment_method,
+                "amount": invoice_total,
+                "tendered": invoice_total,
+            }]
+            valid, normalized_payments, payment_error = POSFeatureManager.normalize_payment_lines(
+                invoice_total, effective_payment_lines, client_id
+            )
+            if not valid:
+                conn.rollback()
+                return False, {"message": payment_error}
+            cursor.execute("UPDATE Sales_Invoices SET Payment_Method = %s WHERE Invoice_ID = %s", (normalized_payments[0]["method"], invoice_id))
+            for line_no, payment in enumerate(normalized_payments, start=1):
+                cursor.execute(
+                    "INSERT INTO POS_Sale_Payments (Invoice_ID, Payment_Line_No, Payment_Method, Amount, Tendered_Amount, Change_Amount, Reference, Payment_UUID, Created_By) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (invoice_id, line_no, payment["method"], payment["amount"], payment["tendered"], payment["change"], payment["reference"], f"{request_id}:{line_no}", user_id),
+                )
+            if draft_id:
+                cursor.execute("UPDATE POS_Sale_Drafts SET Status = 'Converted', Converted_Invoice_ID = %s, Updated_At = NOW() WHERE Draft_ID = %s AND Status = 'Open'", (invoice_id, draft_id))
             conn.commit()
             return True, {
                 "invoice_id": invoice_id,
@@ -894,6 +936,11 @@ class SalesManager:
                     """
                     cursor.execute(detail_query, (invoice_id,))
                     invoice['details'] = cursor.fetchall()
+                    cursor.execute(
+                        "SELECT * FROM POS_Sale_Payments WHERE Invoice_ID = %s ORDER BY Payment_Line_No",
+                        (invoice_id,),
+                    )
+                    invoice['payments'] = cursor.fetchall()
                     
                 return invoice
         except mysql.connector.Error as e:

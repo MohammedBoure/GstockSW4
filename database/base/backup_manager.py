@@ -443,7 +443,10 @@ class BackupManagerMixin:
                 'Sales_Invoices', 'Sales_Details', 'Client_Payments',
                 'Client_Credit_Notes', 'Client_Credit_Note_Details', 'Stock_Movement_Log',
                 'Supplier_Credit_Notes', 'Credit_Note_Details', 'Supplier_Payments',
-                'Print_Templates', 'SystemLogs'
+                'Print_Templates', 'SystemLogs',
+                'POS_Sale_Payments', 'POS_Sale_Drafts', 'POS_Sale_Returns', 'POS_Sale_Return_Details',
+                'POS_Cash_Movements', 'POS_Audit_Log', 'POS_Promotions', 'POS_Promotion_Products',
+                'POS_Loyalty_Accounts', 'POS_Loyalty_Transactions'
             ]
 
             ordered_files = [f"{t}.xlsx" for t in EXCEL_IMPORT_ORDER if f"{t}.xlsx" in excel_files]
