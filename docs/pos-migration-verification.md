@@ -17,7 +17,7 @@ Implemented in the existing POS flow:
 - partial/full returns, stock restoration, refund movement, no-invoice manager returns, and audit events;
 - promotion/coupon evaluation and loyalty earn/redeem transactions;
 - multi-tender caisse expected/count/difference reconciliation plus Cash In/Cash Out;
-- French POS controls, quick client creation, payment dialog, shortcuts, promotion and loyalty actions;
+- French POS controls, quick client creation, payment dialog, shortcuts, promotion and loyalty actions, plus scanner quantity expressions such as 3*barcode;
 - history filters, local pagination, payment summary, CSV export, PDF payment/change details, reprint permission, profit permission, and audit timeline;
 - idempotent POS schema additions and insert-only backfill of legacy invoices into POS_Sale_Payments.
 
@@ -27,6 +27,7 @@ Implemented in the existing POS flow:
 - 33c55b3 feat(pos): add returns promotions and tender reconciliation
 - 53e88fb feat(pos): enforce permissions and audit printing
 - bd2f533 feat(pos): add no-invoice returns and loyalty redemption
+- 840a71f feat(pos): support scanner quantity expressions
 
 All commits were authored as MohammedBoure and pushed to origin/main.
 
