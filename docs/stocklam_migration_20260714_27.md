@@ -42,7 +42,14 @@ Not runnable in this execution environment:
 - Isolated live MySQL migration/row-count/admin-permission repetition: the active runtime has no `mysql.connector` and no live database connection was available. The initializer code was kept idempotent by its duplicate-object handling, and Admin permission initialization now performs a JSON union of missing keys rather than replacing existing custom permissions; this still requires a MySQL-backed acceptance run on the deployment environment.
 - Manual POS, reclamation, inventory, history, reports, and phone-LAN walkthroughs require the desktop dependencies, configured database, and connected device.
 
-## Git and data safety
+## Verification follow-up and Git data safety
+
+### Runtime compatibility follow-up (2026-07-28)
+
+- Commit a7c3a05 normalizes legacy receipt templates with the complete current schema, preventing missing keys such as logo from crashing SettingsTab while retaining custom and unknown values.
+- Commit a7c3a05 handles schema error 1022 as a data-preserving unique-index conflict; no existing rows are deleted or rewritten.
+- Compatibility imports were restored for the former procurement reception module and legacy PDF settings/editor paths; canonical GstockSW4 implementations remain active.
+- Follow-up validation added receipt-template coverage; the complete unit-test run passed with 11 tests, and compileall, diff-check, and conflict-marker checks passed.
 
 - Every migration group was committed with author `MohammedBoure` and pushed to the target `origin` remote.
 - No hard reset was used.
