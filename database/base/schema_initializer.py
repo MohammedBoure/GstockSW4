@@ -853,6 +853,11 @@ class SchemaInitializerMixin:
                         # Error 1091: Key does not exist during DROP INDEX migrations.
                         if err.errno in (1060, 1061, 1091, 1826):
                             pass
+                        elif err.errno == 1022:
+                            logging.info(
+                                "Skipped a schema constraint because existing rows "
+                                "would conflict; no existing data was changed."
+                            )
                         else:
                             logging.warning(f"Schema warning during query '{query[:30]}...': {err}")
 
@@ -863,8 +868,13 @@ class SchemaInitializerMixin:
                         while cursor.nextset():
                             pass
                     except mysql.connector.Error as err:
-                        if err.errno == 1061: # Duplicate key name
+                        if err.errno == 1061: # Duplicate index name
                             pass
+                        elif err.errno == 1022:
+                            logging.info(
+                                "Skipped a unique index because existing rows contain "
+                                "duplicate values; no rows were deleted or rewritten."
+                            )
                         else:
                             logging.warning(f"Index creation warning: {err}")
 

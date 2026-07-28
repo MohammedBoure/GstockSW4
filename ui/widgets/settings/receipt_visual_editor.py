@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap, QImage
 from branding import get_logo_path
+from .receipt_config import merge_receipt_config
 import barcode
 from barcode.writer import ImageWriter
 from datetime import datetime
@@ -88,18 +89,18 @@ class ReceiptVisualEditor(QWidget):
                 "size": 12
             }
         }
+
+        # Keep a clean schema baseline so legacy database templates can be
+        # normalized without inheriting values from a previously selected
+        # template.
+        self._receipt_config_defaults = merge_receipt_config(self.receipt_config, {})
         
         saved = {}
         if self.data_manager and hasattr(self.data_manager, 'config'):
             saved = self.data_manager.config.get("receipt_settings", {})
         if not saved and self.data_manager and hasattr(self.data_manager, 'printer'):
             saved = self.data_manager.printer.config.get("receipt_settings", {})
-        if saved:
-            for k, v in saved.items():
-                if isinstance(v, dict) and k in self.receipt_config:
-                    self.receipt_config[k].update(v)
-                else:
-                    self.receipt_config[k] = v
+        self.receipt_config = merge_receipt_config(self.receipt_config, saved)
 
     def save_config(self):
         if self.data_manager and hasattr(self.data_manager, 'config'):
@@ -638,18 +639,28 @@ class ReceiptVisualEditor(QWidget):
             templates = self.tpl_mgr.get_templates('receipt')
             
         for t in templates:
-            self.cmb_template.addItem(t['name'], t['settings'])
+            settings = merge_receipt_config(
+                self._receipt_config_defaults,
+                t.get('settings'),
+            )
+            self.cmb_template.addItem(t['name'], settings)
             
         # Select active template from local config
         active_name = self.data_manager.printer.config.get("active_receipt_template", "Standard")
         idx = self.cmb_template.findText(active_name)
         if idx >= 0:
             self.cmb_template.setCurrentIndex(idx)
-            self.receipt_config = self.cmb_template.itemData(idx)
+            self.receipt_config = merge_receipt_config(
+                self._receipt_config_defaults,
+                self.cmb_template.itemData(idx),
+            )
         else:
             if self.cmb_template.count() > 0:
                 self.cmb_template.setCurrentIndex(0)
-                self.receipt_config = self.cmb_template.itemData(0)
+                self.receipt_config = merge_receipt_config(
+                    self._receipt_config_defaults,
+                    self.cmb_template.itemData(0),
+                )
                 self.data_manager.printer.config["active_receipt_template"] = self.cmb_template.currentText()
             else:
                 pass
@@ -660,7 +671,10 @@ class ReceiptVisualEditor(QWidget):
     def on_template_changed(self, text):
         idx = self.cmb_template.findText(text)
         if idx >= 0:
-            self.receipt_config = self.cmb_template.itemData(idx)
+            self.receipt_config = merge_receipt_config(
+                self._receipt_config_defaults,
+                self.cmb_template.itemData(idx),
+            )
             self.data_manager.printer.config["active_receipt_template"] = text
             self.update_ui_from_config()
             self.trigger_preview()
@@ -712,6 +726,10 @@ class ReceiptVisualEditor(QWidget):
             self.load_templates()
 
     def update_ui_from_config(self):
+        self.receipt_config = merge_receipt_config(
+            getattr(self, '_receipt_config_defaults', self.receipt_config),
+            self.receipt_config,
+        )
         self.cmb_width.blockSignals(True)
         self.cmb_width.setCurrentText(f"{int(self.receipt_config.get('paper_width_mm', 80))}mm")
         self.cmb_width.blockSignals(False)
