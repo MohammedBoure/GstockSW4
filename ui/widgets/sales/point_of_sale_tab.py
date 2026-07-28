@@ -778,19 +778,28 @@ class PointOfSaleTab(QWidget):
             return
         self.scan_timer.start(120)
 
+    def _parse_scan_input(self, text):
+        raw = str(text or "").strip()
+        if "*" not in raw:
+            return 1.0, raw
+        prefix, code = raw.split("*", 1)
+        try:
+            quantity = float(prefix.strip())
+        except (TypeError, ValueError):
+            return 1.0, raw
+        return (quantity if quantity > 0 else 1.0), code.strip()
     def process_instant_scan(self):
-        text = self.cb_product_search.text().strip()
-        if not text:
+        quantity, code = self._parse_scan_input(self.cb_product_search.text())
+        if not code:
             return
-        batch = self.barcode_map.get(self.normalize_code(text))
+        batch = self.barcode_map.get(self.normalize_code(code))
         if batch:
-            self.add_product_to_cart(batch)
-
+            self.add_product_to_cart(batch, quantity=quantity)
     def handle_search_return(self):
-        self.add_product_to_cart(self.find_batch_from_search_text(), show_not_found=True)
-
+        quantity, _ = self._parse_scan_input(self.cb_product_search.text())
+        self.add_product_to_cart(self.find_batch_from_search_text(), show_not_found=True, quantity=quantity)
     def find_batch_from_search_text(self):
-        text = self.cb_product_search.text().strip()
+        _quantity, text = self._parse_scan_input(self.cb_product_search.text())
         if not text:
             return None
 
@@ -823,7 +832,7 @@ class PointOfSaleTab(QWidget):
         )
         QTimer.singleShot(350, lambda: self.cb_product_search.setStyleSheet(""))
 
-    def add_product_to_cart(self, batch=None, show_not_found=False):
+    def add_product_to_cart(self, batch=None, show_not_found=False, quantity=1.0):
         if batch is None:
             batch = self.find_batch_from_search_text()
 
@@ -840,7 +849,7 @@ class PointOfSaleTab(QWidget):
             if existing_batch and existing_batch['Batch_ID'] == batch['Batch_ID']:
                 qty_widget = self.cart_table.cellWidget(row, 4)
                 if qty_widget and qty_widget.value() < qty_widget.maximum():
-                    qty_widget.setValue(qty_widget.value() + 1)
+                    qty_widget.setValue(min(qty_widget.maximum(), qty_widget.value() + max(0.01, float(quantity or 1))))
                     self.cart_table.scrollToItem(self.cart_table.item(row, 0))
                     self.flash_scan_feedback(True)
                     self.clear_search_input()
@@ -900,7 +909,7 @@ class PointOfSaleTab(QWidget):
         qty_spin = QDoubleSpinBox()
         qty_spin.setRange(0.01, float(batch['Quantity_Current']))
         qty_spin.setDecimals(2)
-        qty_spin.setValue(1.0)
+        qty_spin.setValue(min(qty_spin.maximum(), max(0.01, float(quantity or 1))))
         qty_spin.setAlignment(Qt.AlignCenter)
         qty_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
         qty_spin.valueChanged.connect(self.calculate_totals)
