@@ -30,6 +30,7 @@ from .widgets.billing.billing_tab import BillingTab
 from .widgets.history import MovementHistoryTab
 from .widgets.sales.point_of_sale_tab import PointOfSaleTab
 from .widgets.sales.sales_history_tab import SalesHistoryTab
+from .navigation_permissions import has_permission as check_permission, has_navigation_permission as check_navigation_permission
 from database.auto_backup_worker import AutoBackupWorker
 from database import active_user_id
 from branding import (
@@ -122,7 +123,7 @@ class MainWindow(QMainWindow):
             # المرور على الصفحات بالترتيب والتحقق من الصلاحية برمجياً
             for page_id in sorted(mapping.keys()):
                 perm_key = mapping[page_id]
-                if self.has_permission(perm_key):
+                if self.has_navigation_permission(perm_key):
                     first_permitted_page = page_id
                     break
             
@@ -433,7 +434,7 @@ class MainWindow(QMainWindow):
         for btn_id, perm in mapping.items():
             btn = self.nav_group.button(btn_id)
             if btn:
-                btn.setVisible(self.has_permission(perm))
+                btn.setVisible(self.has_navigation_permission(perm))
 
     def logout(self):
         """تسجيل الخروج مع طلب التأكيد"""
@@ -458,27 +459,10 @@ class MainWindow(QMainWindow):
             self.content_area.addWidget(QWidget())
 
     def has_permission(self, perm_key):
-        """التحقق مما إذا كان المستخدم يملك الصلاحية المحددة في ملف JSON"""
-        if not self.current_user:
-            return False
-            
-        perms = self.current_user.get('Permissions', {})
-        
-        # تحويل النص إلى كائن برمجي في حال كان String
-        if isinstance(perms, str):
-            try:
-                perms = json.loads(perms)
-            except json.JSONDecodeError:
-                perms = []
+        return check_permission(self.current_user, perm_key)
 
-        # إذا كانت الصلاحيات محفوظة على شكل مصفوفة (كما في users_view.py)
-        if isinstance(perms, list):
-            return perm_key in perms
-        # إذا كانت محفوظة على شكل قاموس {key: True}
-        elif isinstance(perms, dict):
-            return perms.get(perm_key, False)
-            
-        return False
+    def has_navigation_permission(self, perm_key):
+        return check_navigation_permission(self.current_user, perm_key)
 
     def _load_page(self, page_id):
         """تحميل الواجهات وإضافة التبويبات بناءً على الصلاحيات المخصصة"""
@@ -538,6 +522,8 @@ class MainWindow(QMainWindow):
                 widget.tabs.addTab(widget.history_tab, "📜 Bons de Réceptions")
             if self.has_permission("tab_proc_credit"):
                 widget.tabs.addTab(widget.credit_tab, "↩️ Avoirs / Retours")
+            if self.has_permission("tab_proc_reclamation"):
+                widget.tabs.addTab(widget.reclamation_tab, "⚠️ Réclamations")
 
         # --- 8. Réclamations ---
         elif page_id == 8:
@@ -638,7 +624,7 @@ class MainWindow(QMainWindow):
         
         required_perm = None if self.connection_error and page_id == 4 else mapping.get(page_id)
         # التحقق: إذا كانت الصفحة تتطلب صلاحية والمستخدم لا يملكها، امنع الدخول
-        if required_perm and not self.has_permission(required_perm):
+        if required_perm and not self.has_navigation_permission(required_perm):
             logging.warning(f"Unauthorized access attempt to page {page_id}")
             return
 
