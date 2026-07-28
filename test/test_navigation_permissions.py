@@ -28,6 +28,11 @@ class NavigationPermissionTests(unittest.TestCase):
         self.assertTrue(has_navigation_permission(user, "nav_sales"))
         self.assertTrue(has_permission(user, "tab_sales_invoices"))
 
+    def test_legacy_admin_direct_feature_navigation_is_visible(self):
+        user = {"Role": "Admin", "Permissions": {"nav_dashboard": True}}
+
+        self.assertTrue(has_navigation_permission(user, "tab_proc_reclamation"))
+
     def test_legacy_admin_explicit_deny_is_preserved(self):
         user = {"Role": "Admin", "Permissions": {"nav_sales": False}}
 

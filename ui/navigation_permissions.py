@@ -121,7 +121,10 @@ def has_navigation_permission(user, permission):
     if present:
         return granted
 
-    return any(
+    if any(
         has_permission(user, fallback)
         for fallback in NAVIGATION_PERMISSION_FALLBACKS.get(permission, ())
-    )
+    ):
+        return True
+
+    return has_permission(user, permission)
