@@ -105,6 +105,7 @@ _ALL_PERMISSIONS = [
     "act_pos_view_profit",
     "act_pos_manage_promotions",
     "act_pos_manage_loyalty",
+    "act_pos_reprint_invoice",
     "act_pos_audit"
 ]
 # =============================================================================

@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, QDate
 from PySide6.QtGui import QColor, QBrush, QFont
 from ui.widgets.inventory.dialogs import BarcodeLineEdit
 from ui.formatting import format_money, format_quantity
+from ui.navigation_permissions import has_permission
 
 try:
     from reportlab.lib import colors
@@ -242,6 +243,23 @@ def export_invoice_to_pdf(data_manager, invoice_data, parent_widget):
             
         tot_data.append(["TOTAL TTC À PAYER :", f"{tot_ttc:,.2f} DA"])
 
+        payment_lines = invoice_data.get("payments") or []
+        if not payment_lines and hasattr(data_manager, "pos_features"):
+            payment_lines = data_manager.pos_features.get_invoice_payments(invoice_id)
+        if payment_lines:
+            for payment in payment_lines:
+                method = payment.get("Payment_Method") or payment.get("method") or "-"
+                amount = float(payment.get("Amount") or payment.get("amount") or 0)
+                reference = payment.get("Reference") or payment.get("reference")
+                label = f"Paiement {method}"
+                if reference:
+                    label += f" ({reference})"
+                tot_data.append([label + " :", f"{amount:,.2f} DA"])
+                change = float(payment.get("Change_Amount") or payment.get("change") or 0)
+                if change > 0:
+                    tot_data.append(["Rendu :", f"{change:,.2f} DA"])
+        else:
+            tot_data.append(["Paiement :", str(invoice_data.get("Payment_Method") or "-")])
         tot_table = Table(tot_data, colWidths=[14.0*cm, 4.0*cm])
         
         tot_style = [
@@ -279,6 +297,12 @@ class SaleDetailsDialog(QDialog):
         self.details_list = []
         self.init_ui()
 
+    def _has_permission(self, permission):
+        checker = getattr(self.window(), "has_permission", None)
+        if callable(checker):
+            return bool(checker(permission))
+        return True
+
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -302,7 +326,8 @@ class SaleDetailsDialog(QDialog):
         profit = float(self.invoice_data.get('Total_Profit') or 0)
         self.lbl_profit = QLabel(format_money(profit) + " DA")
         self.lbl_profit.setStyleSheet("color: #27ae60; font-weight: bold;" if profit > 0 else "color: #e74c3c; font-weight: bold;")
-        form.addRow("<b>Fayda (Profit) :</b>", self.lbl_profit)
+        if self._has_permission("act_pos_view_profit"):
+            form.addRow("<b>Fayda (Profit) :</b>", self.lbl_profit)
         
         layout.addWidget(summary_group)
 
@@ -339,12 +364,16 @@ class SaleDetailsDialog(QDialog):
         self.btn_return.clicked.connect(self.create_return_for_selected_line)
         self.btn_return.setEnabled(hasattr(self.data_manager, "pos_features"))
 
+        self.btn_audit = QPushButton("Audit")
+        self.btn_audit.clicked.connect(self.show_audit_timeline)
+
         btn_close = QPushButton("Fermer")
         btn_close.clicked.connect(self.accept)
         
         btn_row.addWidget(self.btn_cancel_sale)
         btn_row.addStretch()
         btn_row.addWidget(self.btn_return)
+        btn_row.addWidget(self.btn_audit)
         btn_row.addWidget(self.btn_pdf)
         btn_row.addWidget(self.btn_save)
         btn_row.addWidget(btn_close)
@@ -424,6 +453,7 @@ class SaleDetailsDialog(QDialog):
         has_tva = any(float(d.get('TVA_Percent', 0)) > 0 for d in self.details_list)
         self.table.setColumnHidden(4, not has_remise)
         self.table.setColumnHidden(5, not has_tva)
+        self.table.setColumnHidden(7, not self._has_permission("act_pos_view_profit"))
 
     def create_return_for_selected_line(self):
         checker = getattr(self.window(), "has_permission", None)
@@ -464,6 +494,24 @@ class SaleDetailsDialog(QDialog):
         else:
             QMessageBox.warning(self, "Retour", result.get("message", "Impossible d'enregistrer le retour."))
 
+    def show_audit_timeline(self):
+        checker = getattr(self.window(), "has_permission", None)
+        if checker and not checker("act_pos_audit"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour consulter l'audit.")
+            return
+        events = self.data_manager.pos_features.list_audit_events(
+            "Sales_Invoice", self.invoice_data.get("Invoice_ID"), limit=100
+        )
+        if not events:
+            QMessageBox.information(self, "Audit", "Aucun événement enregistré pour cette facture.")
+            return
+        lines = []
+        for event in events:
+            lines.append(
+                f"{event.get('Created_At')} | {event.get('Action')} | "
+                f"{event.get('User_Name') or '-'} | {event.get('Details') or ''}"
+            )
+        QMessageBox.information(self, "Timeline audit", "\n".join(lines))
     def _current_user_id(self):
         try:
             from database.system_logger import active_user_id
@@ -471,6 +519,10 @@ class SaleDetailsDialog(QDialog):
         except Exception:
             return None
     def save_changes(self):
+        checker = getattr(self.window(), "has_permission", None)
+        if checker and not checker("act_edit_sale"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour modifier cette facture.")
+            return
         changes_made = False
         for r in range(self.table.rowCount()):
             container = self.table.cellWidget(r, 2)
@@ -509,6 +561,10 @@ class SaleDetailsDialog(QDialog):
                 QMessageBox.warning(self, "Erreur", "Échec de la suppression.")
 
     def cancel_sale(self):
+        checker = getattr(self.window(), "has_permission", None)
+        if checker and not checker("act_cancel_sale"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour annuler cette facture.")
+            return
         reply = QMessageBox.question(self, "Annuler la Vente", "Voulez-vous annuler complètement cette vente ? Tous les produits seront remis en stock.",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
@@ -522,6 +578,10 @@ class SaleDetailsDialog(QDialog):
                 QMessageBox.warning(self, "Erreur", "Échec de l'annulation.")
 
     def print_pdf(self):
+        checker = getattr(self.window(), "has_permission", None)
+        if checker and not checker("act_pos_reprint_invoice"):
+            QMessageBox.warning(self, "Autorisation", "Autorisation refusée pour réimprimer cette facture.")
+            return
         export_invoice_to_pdf(self.data_manager, self.invoice_data, self)
 
 
@@ -529,6 +589,7 @@ class SalesHistoryTab(QWidget):
     def __init__(self, data_manager):
         super().__init__()
         self.data_manager = data_manager
+        self.can_view_profit = self._has_permission("act_pos_view_profit")
         self.raw_data = []
         self.filtered_data = []
         self.current_page = 1
@@ -536,6 +597,12 @@ class SalesHistoryTab(QWidget):
         self.init_ui()
         self.load_filters()
         self.load_sales_data()
+
+    def _has_permission(self, permission):
+        checker = getattr(self.window(), "has_permission", None)
+        if callable(checker):
+            return bool(checker(permission))
+        return True
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -616,6 +683,7 @@ class SalesHistoryTab(QWidget):
         ]
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
+        self.table.setColumnHidden(10, not self.can_view_profit)
         
         f = self.table.font()
         f.setPointSize(9)
@@ -657,6 +725,8 @@ class SalesHistoryTab(QWidget):
         self.lbl_total_period_profit.setObjectName("ProfitLabel")
         self.lbl_total_period_profit.setStyleSheet("font-size: 18px; padding: 10px; background-color: #eafaf1; border-radius: 8px; border: 1px solid #2ecc71;")
         summary_layout.addWidget(self.lbl_total_period_profit)
+        if not self.can_view_profit:
+            self.lbl_total_period_profit.setText("Bénéfice Total Période : accès restreint")
         
         layout.addLayout(summary_layout)
 
@@ -768,7 +838,7 @@ class SalesHistoryTab(QWidget):
             self.table.setItem(r, 8, item(format_money(amount_entered) if amount_entered is not None else "-"))
             self.table.setItem(r, 9, item(format_money(inv.get('Total_Amount_TTC', 0))))
             
-            profit = float(inv.get('Total_Profit') or 0)
+            profit = float(inv.get('Total_Profit') or 0) if self.can_view_profit else 0
             if row_type == 'Sale':
                 total_profit_period += profit
             profit_item = item(format_money(profit), Qt.AlignCenter, "#27ae60" if profit > 0 else "#c0392b", QFont("Segoe UI", 9, QFont.Bold))

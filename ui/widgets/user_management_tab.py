@@ -98,7 +98,25 @@ SYSTEM_PERMISSIONS = {
             "act_edit_sale": "Modifier une vente",
             "act_pos_open_session": "Ouvrir une caisse",
             "act_pos_close_session": "Cloturer une caisse",
-            "act_edit_closed_cash_session": "Modifier une session cloturee"
+            "act_edit_closed_cash_session": "Modifier une session cloturee",
+            "act_pos_multi_payment": "Autoriser les paiements multiples",
+            "act_pos_credit_sale": "Autoriser la vente a credit",
+            "act_pos_hold_sale": "Suspendre une vente",
+            "act_pos_resume_sale": "Reprendre une vente",
+            "act_pos_quote": "Creer un devis",
+            "act_pos_discount": "Appliquer une remise / promotion",
+            "act_pos_price_override": "Modifier le prix de vente",
+            "act_pos_return": "Creer un retour",
+            "act_pos_return_without_invoice": "Retour sans facture",
+            "act_pos_refund": "Autoriser un remboursement",
+            "act_pos_exchange": "Autoriser un remplacement",
+            "act_pos_cash_movement": "Cash In / Cash Out",
+            "act_pos_reopen_session": "Reouvrir une caisse",
+            "act_pos_view_profit": "Voir les benefices",
+            "act_pos_reprint_invoice": "Reimprimer une facture",
+            "act_pos_manage_promotions": "Gerer les promotions",
+            "act_pos_manage_loyalty": "Gerer la fidelite",
+            "act_pos_audit": "Voir la piste d audit"
         }
     },
     "6. SOUS_TRAITANTS": {

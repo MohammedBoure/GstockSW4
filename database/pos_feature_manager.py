@@ -574,6 +574,25 @@ class POSFeatureManager:
         except Exception as exc:
             logging.error("Could not write POS audit event: %s", exc, exc_info=True)
 
+    def list_audit_events(self, entity_type, entity_id, limit=100):
+        try:
+            with self.db.get_db_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute(
+                    """
+                    SELECT a.*, COALESCE(u.Full_Name, u.Username) AS User_Name
+                    FROM POS_Audit_Log a
+                    LEFT JOIN Users u ON u.User_ID = a.User_ID
+                    WHERE a.Entity_Type = %s AND a.Entity_ID = %s
+                    ORDER BY a.Created_At DESC, a.Audit_ID DESC
+                    LIMIT %s
+                    """,
+                    (entity_type, entity_id, int(limit)),
+                )
+                return cursor.fetchall() or []
+        except Exception as exc:
+            logging.error("Could not load POS audit events: %s", exc, exc_info=True)
+            return []
     def create_sale_return(self, original_invoice_id, return_items, return_type="Return", refund_method=None, reason=None, user_id=None):
         """Validate a partial/full return and restore its original stock atomically."""
         if not original_invoice_id or not return_items:
