@@ -657,6 +657,9 @@ class SalesHistoryTab(QWidget):
 
         self.btn_export = QPushButton("Exporter CSV")
         self.btn_export.clicked.connect(self.export_filtered_csv)
+
+        self.btn_no_invoice_return = QPushButton("Retour sans facture")
+        self.btn_no_invoice_return.clicked.connect(self.create_no_invoice_return)
         filter_layout.addWidget(QLabel("Du:"))
         filter_layout.addWidget(self.date_from)
         filter_layout.addWidget(QLabel("Au:"))
@@ -670,6 +673,7 @@ class SalesHistoryTab(QWidget):
         filter_layout.addWidget(self.search_input)
         filter_layout.addWidget(self.btn_print_selected)
         filter_layout.addWidget(self.btn_export)
+        filter_layout.addWidget(self.btn_no_invoice_return)
         filter_layout.addWidget(btn_refresh)
         
         layout.addLayout(filter_layout)
@@ -730,6 +734,56 @@ class SalesHistoryTab(QWidget):
         
         layout.addLayout(summary_layout)
 
+    def create_no_invoice_return(self):
+        checker = getattr(self.window(), "has_permission", None)
+        if checker and not checker("act_pos_return_without_invoice"):
+            QMessageBox.warning(self, "Autorisation", "Le retour sans facture est réservé au manager.")
+            return
+        product_id, ok = QInputDialog.getInt(self, "Retour sans facture", "ID produit:", 0, 1, 2147483647, 1)
+        if not ok:
+            return
+        batch_id, ok = QInputDialog.getInt(self, "Retour sans facture", "ID lot:", 0, 1, 2147483647, 1)
+        if not ok:
+            return
+        qty, ok = QInputDialog.getDouble(self, "Retour sans facture", "Quantité:", 1.0, 0.01, 999999999.0, 2)
+        if not ok:
+            return
+        unit_price, ok = QInputDialog.getDouble(self, "Retour sans facture", "Prix unitaire HT:", 0.0, 0.0, 999999999.0, 2)
+        if not ok:
+            return
+        tva, ok = QInputDialog.getDouble(self, "Retour sans facture", "TVA %:", 0.0, 0.0, 100.0, 2)
+        if not ok:
+            return
+        labels = ["Espèces", "Carte", "Virement", "Versement", "Autre", "Crédit client"]
+        values = ["Cash", "Card", "Transfer", "Versement", "Other", "Credit"]
+        label, ok = QInputDialog.getItem(self, "Retour sans facture", "Remboursement:", labels, 0, False)
+        if not ok:
+            return
+        reason, ok = QInputDialog.getText(self, "Retour sans facture", "Motif obligatoire:")
+        if not ok or not reason.strip():
+            return
+        success, result = self.data_manager.pos_features.create_no_invoice_return(
+            product_id=product_id,
+            batch_id=batch_id,
+            qty_returned=qty,
+            unit_price_ht=unit_price,
+            tva_percent=tva,
+            refund_method=values[labels.index(label)],
+            reason=reason.strip(),
+            user_id=self._current_user_id(),
+        )
+        if success:
+            QMessageBox.information(self, "Retour", f"Retour sans facture enregistré: {result.get('return_no')}")
+            self.load_sales_data()
+        else:
+            QMessageBox.warning(self, "Retour", result.get("message", "Impossible d'enregistrer le retour."))
+
+    def _current_user_id(self):
+        try:
+            from database.system_logger import active_user_id
+            return active_user_id.get()
+        except Exception:
+            return None
     def load_filters(self):
         clients = self.data_manager.clients.get_all_clients()
         for client in clients:

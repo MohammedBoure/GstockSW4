@@ -744,6 +744,112 @@ class POSFeatureManager:
             if conn and conn.is_connected():
                 conn.close()
 
+    def create_no_invoice_return(self, product_id, batch_id, qty_returned, unit_price_ht,
+                                 tva_percent=0, refund_method=None, reason=None,
+                                 user_id=None, cash_session_id=None):
+        """Create a manager-authorized return when no source invoice is available."""
+        qty = Decimal(str(qty_returned or 0))
+        unit_price = money(unit_price_ht)
+        tva = money(tva_percent)
+        if qty <= 0 or unit_price < 0 or tva < 0:
+            return False, {"message": "Quantité, prix ou TVA invalide."}
+        if refund_method and refund_method not in PAYMENT_METHODS:
+            return False, {"message": "Moyen de remboursement invalide."}
+        if not str(reason or "").strip():
+            return False, {"message": "Le motif du retour est obligatoire."}
+
+        conn = None
+        try:
+            conn = self.db.get_raw_connection()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT b.Batch_ID, b.Product_ID, b.Quantity_Current, b.Status, p.Stock_Unit, p.Product_Name
+                FROM Inventory_Batches b
+                JOIN Products_Master p ON p.Product_ID = b.Product_ID
+                WHERE b.Batch_ID = %s AND b.Product_ID = %s
+                FOR UPDATE
+                """,
+                (batch_id, product_id),
+            )
+            batch = cursor.fetchone()
+            if not batch:
+                conn.rollback()
+                return False, {"message": "Produit ou lot introuvable."}
+
+            return_no = f"RET-SF-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
+            cursor.execute(
+                """
+                INSERT INTO POS_Sale_Returns
+                    (Return_No, Original_Invoice_ID, Client_ID, Return_Date,
+                     Return_Type, Status, Refund_Method, Reason, Created_By)
+                VALUES (%s, NULL, NULL, %s, 'Return', 'Validated', %s, %s, %s)
+                """,
+                (return_no, date.today(), refund_method, str(reason).strip(), user_id),
+            )
+            return_id = cursor.lastrowid
+            line_ht = (qty * unit_price).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+            line_ttc = (line_ht * (Decimal("1") + tva / Decimal("100"))).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+            cursor.execute(
+                """
+                INSERT INTO POS_Sale_Return_Details
+                    (Return_ID, Original_Detail_ID, Product_ID, Batch_ID,
+                     Qty_Returned, Unit_Price_HT, TVA_Percent, Line_Total_HT, Line_Total_TTC)
+                VALUES (%s, NULL, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (return_id, product_id, batch_id, qty, unit_price, tva, line_ht, line_ttc),
+            )
+            new_qty = Decimal(str(batch.get("Quantity_Current") or 0)) + qty
+            cursor.execute(
+                """
+                UPDATE Inventory_Batches
+                SET Quantity_Current = %s,
+                    Status = CASE WHEN %s > 0 THEN 'Available' ELSE Status END
+                WHERE Batch_ID = %s
+                """,
+                (new_qty, new_qty, batch_id),
+            )
+            movement_id = self.stock_movement_log.create_movement_log(
+                product_id=product_id,
+                movement_type="Sale_Return",
+                qty_change=qty,
+                unit_used=batch.get("Stock_Unit") or "Unit",
+                batch_id=batch_id,
+                user_id=user_id,
+                notes=f"Retour sans facture {return_no}: {str(reason).strip()}",
+                external_cursor=cursor,
+            )
+            if not movement_id:
+                raise ValueError("Échec de journalisation du retour de stock.")
+            cursor.execute(
+                "UPDATE POS_Sale_Returns SET Refund_Amount = %s, Updated_At = NOW() WHERE Return_ID = %s",
+                (line_ttc, return_id),
+            )
+            if refund_method == "Cash" and cash_session_id and line_ttc > 0:
+                cursor.execute(
+                    """
+                    INSERT INTO POS_Cash_Movements
+                        (Cash_Session_ID, Movement_Type, Amount, Reason, Reference, Created_By)
+                    VALUES (%s, 'Refund', %s, %s, %s, %s)
+                    """,
+                    (cash_session_id, line_ttc, str(reason).strip(), return_no, user_id),
+                )
+            self.audit(
+                "POS_Sale_Return", return_id, "Validated_No_Invoice",
+                {"product_id": product_id, "batch_id": batch_id, "qty": str(qty), "refund": str(line_ttc)},
+                user_id, cursor=cursor,
+            )
+            conn.commit()
+            return True, {"return_id": return_id, "return_no": return_no, "refund_amount": line_ttc}
+        except Exception as exc:
+            if conn:
+                conn.rollback()
+            logging.error("Could not create no-invoice POS return: %s", exc, exc_info=True)
+            return False, {"message": str(exc)}
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
     def get_return_by_id(self, return_id):
         try:
             with self.db.get_db_connection() as conn:

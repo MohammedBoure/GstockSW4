@@ -80,6 +80,7 @@ class PointOfSaleTab(QWidget):
         
         self.cart_items = []  # List of dicts representing cart rows
         self.payment_lines = []
+        self.loyalty_redeem_points = 0
         self.active_draft_id = None
         self.current_total_ttc = 0.0
         self.batches_cache = []
@@ -303,6 +304,9 @@ class PointOfSaleTab(QWidget):
         self.btn_promotion = QPushButton("Coupon / Promotion")
         self.btn_promotion.clicked.connect(self.apply_promotion_code)
         right_layout.addWidget(self.btn_promotion)
+        self.btn_loyalty = QPushButton("Points fidélité")
+        self.btn_loyalty.clicked.connect(self.apply_loyalty_points)
+        right_layout.addWidget(self.btn_loyalty)
         right_layout.addWidget(self.lbl_total_ht)
         right_layout.addWidget(self.lbl_total_tva)
         right_layout.addWidget(self.lbl_total_remise)
@@ -367,6 +371,57 @@ class PointOfSaleTab(QWidget):
         QMessageBox.information(
             self, "Promotion", f"Remise appliquée: {float(result.get('discount_amount') or 0):.2f} DA"
         )
+    def apply_loyalty_points(self):
+        if self.cart_table.rowCount() == 0:
+            QMessageBox.warning(self, "Fidélité", "Le panier est vide.")
+            return
+        client = self.cb_client.currentData()
+        client_id = client.get("Client_ID") if isinstance(client, dict) else client
+        if not client_id:
+            QMessageBox.warning(self, "Fidélité", "Sélectionnez un client pour utiliser ses points.")
+            return
+        account = self.data_manager.pos_features.get_loyalty_account(client_id) or {}
+        balance = float(account.get("Points_Balance") or 0)
+        if balance <= 0:
+            QMessageBox.information(self, "Fidélité", "Ce client n'a pas de points disponibles.")
+            return
+        available_points = max(0, int(balance) - self.loyalty_redeem_points)
+        if available_points <= 0:
+            QMessageBox.information(self, "Fidélité", "Tous les points disponibles sont déjà appliqués.")
+            return
+        points, ok = QInputDialog.getInt(
+            self, "Fidélité", f"Points disponibles: {available_points} (1 point = 1 DA HT)", 1, 1, available_points, 1
+        )
+        if not ok:
+            return
+        remaining = float(points)
+        for row in range(self.cart_table.rowCount()):
+            if remaining <= 0:
+                break
+            qty_widget = self.cart_table.cellWidget(row, 4)
+            price_widget = self.cart_table.cellWidget(row, 5)
+            remise = self.cart_table.cellWidget(row, 6)
+            line_ht = float(qty_widget.value() * (price_widget.currentData() or 0))
+            current_discount = (
+                line_ht * remise.get_value() / 100.0
+                if remise.get_type() == "%"
+                else remise.get_value()
+            )
+            available = max(0.0, line_ht - current_discount)
+            applied = min(float(int(remaining)), available)
+            if applied < 1.0:
+                continue
+            remise.type_combo.setCurrentText("DA")
+            remise.value_spin.setValue(min(line_ht, current_discount + applied))
+            remaining -= applied
+        applied_points = points - int(round(remaining))
+        self.loyalty_redeem_points = max(0, self.loyalty_redeem_points + applied_points)
+        self.calculate_totals()
+        self.btn_loyalty.setText(f"Points utilisés: {self.loyalty_redeem_points}")
+        if applied_points <= 0:
+            QMessageBox.warning(self, "Fidélité", "Aucun point n'a pu être appliqué.")
+        else:
+            QMessageBox.information(self, "Fidélité", f"{applied_points} point(s) appliqué(s).")
     def open_payment_dialog(self):
         if self.cart_table.rowCount() == 0:
             QMessageBox.warning(self, "Paiement", "Le panier est vide.")
@@ -984,6 +1039,7 @@ class PointOfSaleTab(QWidget):
         self.lbl_total_ttc.setText(f"TOTAL TTC : {format_money(total_ttc)} DA")
 
     def clear_cart(self):
+        self.loyalty_redeem_points = 0
         self.cart_table.setRowCount(0)
         self.calculate_totals()
 
@@ -1235,6 +1291,11 @@ class PointOfSaleTab(QWidget):
                     QMessageBox.warning(self, "Erreur Impression", f"La vente a été enregistrée avec succès, mais une erreur s'est produite lors de l'impression.\nDétail: {e}")
 
             if client_id and not result.get("duplicate"):
+                if self.loyalty_redeem_points > 0:
+                    self.data_manager.pos_features.record_loyalty_transaction(
+                        client_id, result.get("invoice_id"), "Redeem", self.loyalty_redeem_points, self.get_current_user_id(),
+                        notes="Utilisation au paiement",
+                    )
                 points = int(float(self.current_total_ttc or 0) // 100)
                 if points > 0:
                     self.data_manager.pos_features.record_loyalty_transaction(
